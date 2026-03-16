@@ -13,6 +13,7 @@ universe:
     - XLF
     - XLK
     - XLE
+    - GLD
     # Trade Targets
     - AAPL
     - MSFT
@@ -25,6 +26,14 @@ universe:
     - BABA
     - JD
     - PDD
+    - LMT
+    - NOC
+    - CRM
+    - ORCL
+    - UBER
+    - SHOP
+    - PANW
+    - CRWD
   # Minimum liquidity / volume filters
   min_avg_dollar_volume_30d: 50_000_000
   min_atr_multiple_for_volume: 0.5   # min volume vs ATR-based expectation
@@ -45,7 +54,7 @@ market_sessions:
 
 market_quality:
   # Core liquid: tighter spread. High-vol names use high_vol_max_spread_pct. (0.10% blocks almost everything on IEX.)
-  max_spread_pct: 0.5     # core liquid: allow up to 0.5%
+  max_spread_pct: 0.7     # core liquid: allow up to 0.7%
   min_volume_atr_ratio: 1.0
   block_on_news_spike: true
   news_volatility_spike_atr_pct: 8.0   # block only when ATR% >= this (volatility spike)
@@ -63,7 +72,7 @@ market_quality:
     - BABA
     - JD
     - PDD
-  high_vol_max_spread_pct: 1.5   # temporarily loosened for proof-of-life (core stays 0.5%)
+  high_vol_max_spread_pct: 1.2   # high-vol names: allow up to 1.2%
 
 # US market holidays / half-days (sample; extend per year)
 holidays: []   # populated at runtime or from calendar
@@ -111,6 +120,14 @@ trade_filters:
       XLY: []
       TLT: []
       GLD: []
+      LMT: []
+      NOC: []
+      CRM: []
+      ORCL: []
+      UBER: []
+      SHOP: []
+      PANW: []
+      CRWD: []
       VIXY: []
       RIVN: []
       SOFI: []
@@ -130,7 +147,7 @@ trade_filters:
   volatility_do_not_trade:
     enabled: true
     max_atr_pct: 6.0        # temporarily loosened for proof-of-life
-    max_spread_pct: 0.5    # core liquid: max spread %
+    max_spread_pct: 0.7     # core liquid: max spread %
     high_vol_symbols:      # same as market_quality; wider spread for these
       - COIN
       - RIVN
@@ -144,7 +161,7 @@ trade_filters:
       - BABA
       - JD
       - PDD
-    high_vol_max_spread_pct: 1.0
+    high_vol_max_spread_pct: 1.2
 
 # ---------------------------------------------------------------------------
 # 2) Strategy (Trend-following as default)
@@ -173,7 +190,7 @@ strategy:
     pullback_touch_ma_fast: true
     pullback_tolerance_pct: 2.0   # used only when entry_mode: pullback
     volatility_filter_atr_period: 14
-    max_atr_pct_for_entry: 3.0   # allow noisier names for proof-of-life
+    max_atr_pct_for_entry: 4.0   # allow noisier names for proof-of-life
   exits:
     stop_loss_pct: 1.5
     cooldown_after_stop_minutes: 30 # avoid immediate re-entry after stop loss
@@ -187,7 +204,7 @@ strategy:
     partial_exit_ratio: 0.5         # sell this fraction (e.g. 0.5 = 50%) at partial target
     time_bars_exit: 25              # exit after 25 bars (20-30 range)
     kill_switch:
-      max_spread_pct: 0.5
+      max_spread_pct: 0.7
       max_atr_pct: 3.0   # exit if ATR% > this (was max_atr_multiple; same scale: percent)
 
 # ---------------------------------------------------------------------------
