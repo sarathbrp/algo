@@ -2,6 +2,8 @@
 
 A rule-based algorithmic trading application that enforces **universe & data**, **entry/exit**, **position sizing**, **portfolio & drawdown**, **execution**, and **compliance** rules before any trade.
 
+The structure is inspired by [QuantConnect Lean](https://github.com/QuantConnect/Lean): **Algorithm** (with `Initialize` / `OnEndOfDay`), **Engine** (backtest/live), **Data** (CSV or Alpaca), and a **CLI** (`lean backtest`, `lean live`).
+
 ## Priority order (implementation order)
 
 1. **Open-order lock** — Before placing a new order for a symbol, skip if that symbol already has an open (pending) order. *(run_alpaca_loop + broker.get_open_orders)*
@@ -49,34 +51,40 @@ A rule-based algorithmic trading application that enforces **universe & data**, 
 
 The app **does not run or schedule by default**. No loop runs at market open unless you start it yourself or set up a schedule (see `SCHEDULE.md`). Run scripts only when you want to trade.
 
-## Project Layout
+## Project Layout (Lean-style)
 
 ```
 algo/
+├── lean                    # CLI: lean backtest | lean live (QuantConnect Lean–inspired)
 ├── config/
-│   └── default.yaml      # All parameters (universe, strategy, risk, execution, broker, compliance)
+│   └── default.yaml       # All parameters (universe, strategy, risk, execution, broker, compliance)
 ├── src/
-│   ├── config_loader.py  # Load YAML config
-│   ├── universe.py       # Market calendar, universe filter, market quality gate
-│   ├── strategy.py       # Trend-following entry/exit (extensible to mean reversion/breakout)
+│   ├── algorithm/         # Algorithm layer (QCAlgorithm, Context, Slice)
+│   │   ├── base.py        # QCAlgorithm: Initialize(), OnEndOfDay()
+│   │   ├── context.py     # AlgorithmContext, Portfolio, Slice, Bar
+│   │   └── trend_following.py  # Default TrendFollowingAlgorithm
+│   ├── engine/            # Engine: runs algorithm over data
+│   │   └── backtest_engine.py  # EngineBacktest (algorithm-driven backtest)
+│   ├── backtest/          # Data loaders + metrics (CSV, Alpaca)
+│   │   ├── data.py        # load_csv_data(), load_alpaca_data()
+│   │   ├── engine.py      # BacktestEngine (strategy-driven, optional)
+│   │   └── metrics.py    # compute_metrics()
+│   ├── config_loader.py
+│   ├── universe.py
+│   ├── strategy.py        # Trend-following entry/exit logic
 │   ├── position_sizing.py
 │   ├── portfolio_risk.py
 │   ├── execution.py
 │   ├── compliance.py
-│   ├── trading_engine.py # Orchestrates all gates and produces trade decision
+│   ├── trading_engine.py  # Full gates for live trading
 │   └── brokers/
-│       └── alpaca_client.py  # Alpaca: account, bars, quotes, order submission
-├── scripts/               # Run from project root: python scripts/<name>.py
-│   ├── run_example.py    # Example: run entry gates with sample OHLCV (no broker)
-│   ├── run_alpaca.py     # Run engine with Alpaca (paper/live)
-│   ├── run_alpaca_loop.py # Loop until market close (entries + exits)
-│   ├── run_scheduled_alpaca.py # Start loop at 9:30 AM ET
-│   ├── check_equity.py   # Print account equity
-│   ├── check_prices.py   # Latest prices for universe symbols
-│   ├── check_positions.py # Open positions and equity
-│   ├── show_daily_summary.py # That day's trades and positions
-│   ├── show_sell_strategy.py # Sell strategy/timeline per position
-│   └── reset_paper.py    # Paper only: close all, clear state
+│       └── alpaca_client.py
+├── scripts/
+│   ├── run_backtest.py    # Backtest (CSV/Alpaca) — or use: lean backtest
+│   ├── download_backtest_data.py
+│   ├── run_alpaca_loop.py # Live loop — or use: lean live
+│   ├── run_alpaca.py
+│   └── ...
 ├── requirements.txt
 └── README.md
 ```
@@ -103,7 +111,24 @@ Set environment variables (never commit keys):
 - **Paper:** `APCA_API_KEY_ID`, `APCA_API_SECRET_KEY` (from Alpaca dashboard → Paper Trading → API Keys)
 - **Live:** `ALPACA_LIVE_API_KEY_ID`, `ALPACA_LIVE_API_SECRET_KEY` (from Alpaca dashboard → Live → API Keys). Alpaca uses **separate** key pairs for paper vs live; using paper keys with `--live` causes 401 Unauthorized.
 
-Paper base URL is used automatically when `paper: true`. Then run:
+Paper base URL is used automatically when `paper: true`.
+
+### Lean CLI (backtest & live)
+
+From the project root:
+
+```bash
+# Backtest (CSV or Alpaca)
+python lean backtest --data-dir data/backtest --start 2023-01-01 --end 2024-12-31
+python lean backtest --alpaca --start 2023-01-01 --end 2024-12-31
+
+# Live / paper loop
+python lean live              # paper (default)
+python lean live --live       # live account
+python lean live -v           # verbose
+```
+
+Or use the scripts directly:
 
 ```bash
 python scripts/run_alpaca.py
@@ -134,6 +159,26 @@ Edit `config/default.yaml` to:
 - Set **portfolio_risk** (daily loss limit, max drawdown, safe mode, trade frequency).
 - Set **execution** (limit vs market, spread gate, slippage limits).
 - Set **compliance** (PDT minimum equity, margin account flag).
+
+## Algorithm API (Lean-style)
+
+Subclass `QCAlgorithm` and override `Initialize(context)` and `OnEndOfDay(context, slice)`:
+
+```python
+from src.algorithm import QCAlgorithm, AlgorithmContext, Slice
+
+class MyAlgorithm(QCAlgorithm):
+    def initialize(self, context: AlgorithmContext) -> None:
+        pass  # Universe from config
+
+    def on_end_of_day(self, context: AlgorithmContext, slice: Slice) -> None:
+        for symbol in slice.symbols():
+            bar = slice.get(symbol)
+            # ... use bar.open, bar.high, bar.low, bar.close
+            # context.market_order(symbol, quantity)
+```
+
+Run with the engine: `EngineBacktest(config).run(MyAlgorithm(config), data, ...)`. The default `TrendFollowingAlgorithm` wraps the trend-following strategy and position sizer.
 
 ## Extending the App
 

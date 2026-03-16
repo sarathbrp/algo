@@ -2,19 +2,26 @@
 # Override via environment or config file per environment.
 
 # ---------------------------------------------------------------------------
-# 1) Universe & Data (3 groups: regime = detect only; bot trades sector + targets)
+# 1) Universe & Data (Lean-style: regime = detect only; bot trades expanded universe)
 # ---------------------------------------------------------------------------
-# Market Regime (detect only; not traded): SPY, QQQ, TLT, HYG, VIXY → see market_regime.symbols
-# Sector Rotation (traded): XLF, XLK, XLE
-# Trade Targets (traded): AAPL, MSFT, NVDA, AMZN, META, GOOGL, AMD, TSLA, BABA, JD, PDD
+# Market Regime (detect only; not traded): SPY, QQQ, TLT, HYG, VIXY → market_regime.symbols
+# Traded universe below: sector ETFs + stocks by sector (expand like QuantConnect Lean)
 universe:
-  symbols:   # = Sector Rotation + Trade Targets (regime symbols used only for score)
-    # Sector Rotation
-    - XLF
-    - XLK
-    - XLE
-    - GLD
-    # Trade Targets
+  symbols:   # All symbols tracked for trading (add/remove per strategy)
+    # ---- Sector / thematic ETFs ----
+    - XLF   # Financials
+    - XLK   # Technology
+    - XLE   # Energy
+    - XLV   # Healthcare
+    - XLI   # Industrials
+    - XLY   # Consumer Discretionary
+    - XLP   # Consumer Staples
+    - XLB   # Materials
+    - XLRE  # Real Estate
+    - GLD   # Gold
+    - SLV   # Silver
+    - IWM   # Russell 2000
+    # ---- Technology ----
     - AAPL
     - MSFT
     - NVDA
@@ -23,17 +30,73 @@ universe:
     - GOOGL
     - AMD
     - TSLA
+    - CRM
+    - ORCL
+    - ADBE
+    - AVGO
+    - CSCO
+    - INTC
+    - QCOM
+    - IBM
+    - NOW
+    - INTU
+    - AMAT
+    - LRCX
+    - SNOW
+    - PLTR
+    - NET
+    - CRWD
+    - PANW
+    - SHOP
+    - UBER
+    - ABNB
+    - NFLX
+    # ---- Financials ----
+    - JPM
+    - BAC
+    - GS
+    - MS
+    - C
+    - WFC
+    - SCHW
+    - AXP
+    - BLK
+    # ---- Healthcare ----
+    - UNH
+    - JNJ
+    - PFE
+    - ABBV
+    - MRK
+    - LLY
+    - TMO
+    - ABT
+    - DHR
+    - BMY
+    # ---- Consumer / Retail ----
+    - HD
+    - MCD
+    - NKE
+    - SBUX
+    - TGT
+    - LOW
+    - COST
+    - PG
+    - KO
+    - PEP
+    - WMT
+    # ---- Industrial / Defense ----
+    - LMT
+    - NOC
+    - RTX
+    - BA
+    - HON
+    - UPS
+    - CAT
+    - DE
+    # ---- China ADRs / International ----
     - BABA
     - JD
     - PDD
-    - LMT
-    - NOC
-    - CRM
-    - ORCL
-    - UBER
-    - SHOP
-    - PANW
-    - CRWD
   # Minimum liquidity / volume filters
   min_avg_dollar_volume_30d: 50_000_000
   min_atr_multiple_for_volume: 0.5   # min volume vs ATR-based expectation
@@ -142,6 +205,55 @@ trade_filters:
       BABA: []
       JD: []
       PDD: []
+      # Expanded universe (Lean-style)
+      XLP: []
+      XLB: []
+      XLRE: []
+      SLV: []
+      IWM: []
+      ADBE: []
+      CSCO: []
+      INTC: []
+      QCOM: []
+      IBM: []
+      NOW: []
+      INTU: []
+      AMAT: []
+      LRCX: []
+      NET: []
+      ABNB: []
+      C: []
+      WFC: []
+      SCHW: []
+      AXP: []
+      BLK: []
+      UNH: []
+      JNJ: []
+      PFE: []
+      ABBV: []
+      MRK: []
+      LLY: []
+      TMO: []
+      ABT: []
+      DHR: []
+      BMY: []
+      HD: []
+      MCD: []
+      NKE: []
+      SBUX: []
+      TGT: []
+      LOW: []
+      COST: []
+      PG: []
+      KO: []
+      PEP: []
+      WMT: []
+      RTX: []
+      BA: []
+      HON: []
+      UPS: []
+      CAT: []
+      DE: []
 
   # Volatility/spread-based "do not trade" (uses real ATR%, tiered spread)
   volatility_do_not_trade:
