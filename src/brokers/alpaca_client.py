@@ -37,6 +37,18 @@ class QuoteInfo:
     ask: float
     mid: float
     spread_pct: float
+    timestamp: datetime | None = None  # quote time (UTC); None = unknown
+
+    def is_stale(self, max_age_seconds: float) -> bool:
+        """True if quote is older than max_age_seconds (use for spread gate)."""
+        if self.timestamp is None:
+            return False  # unknown age: treat as fresh
+        from datetime import timezone
+        now = datetime.now(timezone.utc)
+        ts = self.timestamp
+        if getattr(ts, "tzinfo", None) is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        return (now - ts).total_seconds() > max_age_seconds
 
 
 class AlpacaBroker:
@@ -182,7 +194,10 @@ class AlpacaBroker:
             return None
         mid = (bid + ask) / 2.0
         spread_pct = (ask - bid) / mid * 100.0
-        return QuoteInfo(bid=bid, ask=ask, mid=mid, spread_pct=spread_pct)
+        ts = None
+        if hasattr(q, "timestamp") and q.timestamp is not None:
+            ts = q.timestamp if isinstance(q.timestamp, datetime) else datetime.fromisoformat(str(q.timestamp).replace("Z", "+00:00"))
+        return QuoteInfo(bid=bid, ask=ask, mid=mid, spread_pct=spread_pct, timestamp=ts)
 
     def submit_order(self, order: OrderRequest) -> Any:
         """Submit order to Alpaca. Returns Alpaca order object."""
