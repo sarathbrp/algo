@@ -59,13 +59,14 @@ def main() -> None:
     regime_scorer = MarketRegimeScorer(config)
     et = pytz.timezone("America/New_York")
     exit_interval_min = int(broker_cfg.get("exit_check_interval_minutes") or broker_cfg.get("check_interval_minutes", 5))
-    entry_interval_min = int(broker_cfg.get("entry_check_interval_minutes", 10))
     exit_interval_sec = exit_interval_min * 60
-    entry_interval_sec = entry_interval_min * 60
     tracker_path = PROJECT_ROOT / "data" / "positions_tracked.json"
-    last_entry_check_time = None
+    entry_check_done_this_run = False  # entry only at start: first pass in session (restart = run entry again)
+    mq_cfg = config.get("market_quality", {})
+    stale_quote_max_age = float(mq_cfg.get("stale_quote_max_age_seconds", 60))
+    regime_pct_above_50d_ma = float(config.get("universe", {}).get("regime_min_pct_above_50d_ma", 0.30))
 
-    print("Running until market close. Exits every %d min, entries every %d min. Ctrl+C to stop." % (exit_interval_min, entry_interval_min))
+    print("Running until market close. Exits every %d min; entry check once at start (first pass in session). Ctrl+C to stop." % exit_interval_min)
     print("-" * 50)
 
     while True:
@@ -186,14 +187,36 @@ def main() -> None:
                 print(dt.strftime("%H:%M ET"), symbol, "exit check skip —", type(e).__name__, str(e)[:60])
                 continue
 
-        # Entry checks run every entry_interval_min (e.g. 10 min); exits run every cycle (5 min)
-        now_sec = time.time()
-        do_entry_check = last_entry_check_time is None or (now_sec - last_entry_check_time) >= entry_interval_sec
+        # Entry check: once at starting time (first pass in session). Restart script = entry runs again.
+        do_entry_check = not entry_check_done_this_run
         if do_entry_check:
-            last_entry_check_time = now_sec
+            entry_check_done_this_run = True
 
         if do_entry_check:
-            # Market regime: fetch SPY/QQQ/VIX/HYG/TLT bars and compute score -> position size multiplier
+            # Regime filter: skip entries if < 30% of universe are above 50D MA (bearish regime)
+            above_50d = 0
+            total_with_bars = 0
+            try:
+                for sym in symbols:
+                    b = broker.get_bars(sym, timeframe="1Day", limit=55)
+                    if b.empty or len(b) < 50:
+                        continue
+                    total_with_bars += 1
+                    close = float(b["close"].iloc[-1])
+                    ma50 = float(b["close"].rolling(50).mean().iloc[-1])
+                    if close > ma50:
+                        above_50d += 1
+                if total_with_bars > 0:
+                    pct_above = above_50d / total_with_bars
+                    if pct_above < regime_pct_above_50d_ma:
+                        print(dt.strftime("%H:%M ET"), "— bearish regime: %.0f%% above 50D MA (min %.0f%%) — skipping entries" % (pct_above * 100, regime_pct_above_50d_ma * 100))
+                        do_entry_check = False
+            except Exception as e:
+                if verbose:
+                    print(dt.strftime("%H:%M ET"), "— regime filter skip:", type(e).__name__, str(e)[:50])
+
+        if do_entry_check:
+            # Market regime: fetch SPY/QQQ/VIX/HYG/TLT bars for position size multiplier
             regime_multiplier = None
             if regime_scorer.enabled:
                 try:
@@ -210,7 +233,7 @@ def main() -> None:
                     if verbose:
                         print(dt.strftime("%H:%M ET"), "— regime skip:", type(e).__name__, str(e)[:50])
             if verbose:
-                print(dt.strftime("%H:%M ET"), "Entry check: equity $%.0f, positions %d" % (account_equity, len(positions)))
+                print(dt.strftime("%H:%M ET"), "Entry check (start): equity $%.0f, positions %d" % (account_equity, len(positions)))
             # Symbols that already have an open (pending) order — do not place another
             open_orders = broker.get_open_orders()
             open_order_symbols = {o.get("symbol", "").upper() for o in (open_orders or []) if o.get("symbol")}
@@ -235,7 +258,10 @@ def main() -> None:
                             print("  %s: skip — not enough bars (got %d, need 200)" % (symbol, len(df) if not df.empty else 0))
                         continue
                     quote = broker.get_latest_quote(symbol)
-                    spread_pct = quote.spread_pct if quote else 0.15
+                    if quote and getattr(quote, "is_stale", None) and quote.is_stale(stale_quote_max_age):
+                        spread_pct = 0.15  # filter stale quote: assume tight spread so gate passes
+                    else:
+                        spread_pct = quote.spread_pct if quote else 0.15
                     atr = _atr(df["high"], df["low"], df["close"], 14)
                     atr_pct = (atr.iloc[-1] / df["close"].iloc[-1]) * 100 if len(atr) else None
 
@@ -273,12 +299,10 @@ def main() -> None:
                     print(dt.strftime("%H:%M ET"), symbol, "skip —", type(e).__name__, str(e)[:80])
                     continue
 
-        elapsed = int(now_sec - last_entry_check_time) // 60 if last_entry_check_time else 0
-        next_entry_min = max(0, entry_interval_min - elapsed)
         if do_entry_check:
-            print(dt.strftime("%H:%M ET"), "— exits every %d min, next entry check in %d min" % (exit_interval_min, entry_interval_min))
+            print(dt.strftime("%H:%M ET"), "— entry check done (once at start). Exits every %d min." % exit_interval_min)
         else:
-            print(dt.strftime("%H:%M ET"), "— next exit in %d min, entry check in %d min" % (exit_interval_min, next_entry_min))
+            print(dt.strftime("%H:%M ET"), "— exits every %d min. No further entry checks this run." % exit_interval_min)
         sys.stdout.flush()
         time.sleep(exit_interval_sec)
 

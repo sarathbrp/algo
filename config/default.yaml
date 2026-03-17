@@ -97,6 +97,8 @@ universe:
     - BABA
     - JD
     - PDD
+  # Regime filter: skip entries when fewer than this fraction of symbols are above 50D MA (bearish)
+  regime_min_pct_above_50d_ma: 0.30   # e.g. 0.30 = 30%; if < 30%, log "bearish regime" and skip entries
   # Minimum liquidity / volume filters
   min_avg_dollar_volume_30d: 50_000_000
   min_atr_multiple_for_volume: 0.5   # min volume vs ATR-based expectation
@@ -116,12 +118,14 @@ market_sessions:
     trade_allowed: false   # wider spreads
 
 market_quality:
-  # Core liquid: tighter spread. High-vol names use high_vol_max_spread_pct. (0.10% blocks almost everything on IEX.)
-  max_spread_pct: 0.7     # core liquid: allow up to 0.7%
+  # Spread gate: filter stale quotes; thresholds 0.5% core / 0.5% high-vol (unblocks symbols with valid quotes)
+  max_spread_pct: 0.5     # core liquid: allow up to 0.5%
+  high_vol_max_spread_pct: 0.5   # high-vol: allow up to 0.5%
+  stale_quote_max_age_seconds: 60   # quotes older than this are filtered (use default spread for gate)
   min_volume_atr_ratio: 1.0
   block_on_news_spike: true
   news_volatility_spike_atr_pct: 8.0   # block only when ATR% >= this (volatility spike)
-  # High-vol bucket: wider spread allowed (IEX/thin names: COIN, RIVN, MARA, etc.)
+  # High-vol bucket (same spread threshold; list for DNT/other logic)
   high_vol_symbols:
     - COIN
     - RIVN
@@ -135,7 +139,7 @@ market_quality:
     - BABA
     - JD
     - PDD
-  high_vol_max_spread_pct: 1.2   # high-vol names: allow up to 1.2%
+# (high_vol_max_spread_pct set above with core)
 
 # US market holidays / half-days (sample; extend per year)
 holidays: []   # populated at runtime or from calendar
