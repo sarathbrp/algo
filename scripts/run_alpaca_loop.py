@@ -59,14 +59,16 @@ def main() -> None:
     regime_scorer = MarketRegimeScorer(config)
     et = pytz.timezone("America/New_York")
     exit_interval_min = int(broker_cfg.get("exit_check_interval_minutes") or broker_cfg.get("check_interval_minutes", 5))
+    entry_interval_min = int(broker_cfg.get("entry_check_interval_minutes", 10))
     exit_interval_sec = exit_interval_min * 60
+    entry_interval_sec = entry_interval_min * 60
     tracker_path = PROJECT_ROOT / "data" / "positions_tracked.json"
-    entry_check_done_this_run = False  # entry only at start: first pass in session (restart = run entry again)
+    last_entry_check_time = None  # entry check every entry_interval_min (e.g. 10 min)
     mq_cfg = config.get("market_quality", {})
     stale_quote_max_age = float(mq_cfg.get("stale_quote_max_age_seconds", 60))
     regime_pct_above_50d_ma = float(config.get("universe", {}).get("regime_min_pct_above_50d_ma", 0.30))
 
-    print("Running until market close. Exits every %d min; entry check once at start (first pass in session). Ctrl+C to stop." % exit_interval_min)
+    print("Running until market close. Exits every %d min, entries every %d min. Ctrl+C to stop." % (exit_interval_min, entry_interval_min))
     print("-" * 50)
 
     while True:
@@ -187,10 +189,11 @@ def main() -> None:
                 print(dt.strftime("%H:%M ET"), symbol, "exit check skip —", type(e).__name__, str(e)[:60])
                 continue
 
-        # Entry check: once at starting time (first pass in session). Restart script = entry runs again.
-        do_entry_check = not entry_check_done_this_run
+        # Entry check every entry_interval_min (e.g. 10 min)
+        now_sec = time.time()
+        do_entry_check = last_entry_check_time is None or (now_sec - last_entry_check_time) >= entry_interval_sec
         if do_entry_check:
-            entry_check_done_this_run = True
+            last_entry_check_time = now_sec
 
         if do_entry_check:
             # Regime filter: skip entries if < 30% of universe are above 50D MA (bearish regime)
@@ -233,35 +236,60 @@ def main() -> None:
                     if verbose:
                         print(dt.strftime("%H:%M ET"), "— regime skip:", type(e).__name__, str(e)[:50])
             if verbose:
-                print(dt.strftime("%H:%M ET"), "Entry check (start): equity $%.0f, positions %d" % (account_equity, len(positions)))
-            # Symbols that already have an open (pending) order — do not place another
+                print(dt.strftime("%H:%M ET"), "Entry check: equity $%.0f, positions %d" % (account_equity, len(positions)))
             open_orders = broker.get_open_orders()
             open_order_symbols = {o.get("symbol", "").upper() for o in (open_orders or []) if o.get("symbol")}
+            available_cash = broker.get_buying_power()
+            ma_fast_period = engine.strategy.ma_fast
+            ma_slow_period = engine.strategy.ma_slow
             for symbol in symbols:
-                # Skip if any of: existing position, open order, or tracked local state
                 if symbol in current_positions:
                     if verbose:
-                        print("  %s: skip — already have position" % symbol)
+                        print("  %s: skip — already_have_position" % symbol)
                     continue
                 if symbol.upper() in open_order_symbols:
                     if verbose:
-                        print("  %s: skip — open order exists" % symbol)
+                        print("  %s: skip — open_order_exists" % symbol)
                     continue
                 if symbol.upper() in tracked:
                     if verbose:
-                        print("  %s: skip — in tracked state" % symbol)
+                        print("  %s: skip — in_tracked_state" % symbol)
                     continue
                 try:
                     df = broker.get_bars(symbol, timeframe="1Day", limit=220)
-                    if df.empty or len(df) < 200:
+                    if df.empty or len(df) < max(200, ma_slow_period):
                         if verbose:
-                            print("  %s: skip — not enough bars (got %d, need 200)" % (symbol, len(df) if not df.empty else 0))
+                            print("  %s: skip — not_enough_bars (got %d)" % (symbol, len(df) if not df.empty else 0))
                         continue
+                    close = float(df["close"].iloc[-1])
+                    # Cheap prefilter: MA checks before quote or full strategy
+                    if len(df) >= ma_fast_period:
+                        ma_fast = float(df["close"].rolling(ma_fast_period).mean().iloc[-1])
+                        if close <= ma_fast:
+                            if verbose:
+                                print("  %s: skip — below_fast_ma" % symbol)
+                            continue
+                    if len(df) >= ma_slow_period:
+                        ma_slow = float(df["close"].rolling(ma_slow_period).mean().iloc[-1])
+                        if close <= ma_slow:
+                            if verbose:
+                                print("  %s: skip — below_slow_ma" % symbol)
+                            continue
                     quote = broker.get_latest_quote(symbol)
                     if quote and getattr(quote, "is_stale", None) and quote.is_stale(stale_quote_max_age):
-                        spread_pct = 0.15  # filter stale quote: assume tight spread so gate passes
+                        spread_pct = 0.15
                     else:
                         spread_pct = quote.spread_pct if quote else 0.15
+                    spread_cap = engine.market_quality._max_spread_for_symbol(symbol)
+                    if spread_pct is not None and spread_pct > spread_cap:
+                        if verbose:
+                            print("  %s: skip — spread_too_high (%.2f%% > %.2f%%)" % (symbol, spread_pct, spread_cap))
+                        continue
+                    est_buying_power_required = close * 1  # min 1 share
+                    if est_buying_power_required > available_cash:
+                        if verbose:
+                            print("  %s: skip — insufficient_buying_power (est $%.0f > $%.0f)" % (symbol, est_buying_power_required, available_cash))
+                        continue
                     atr = _atr(df["high"], df["low"], df["close"], 14)
                     atr_pct = (atr.iloc[-1] / df["close"].iloc[-1]) * 100 if len(atr) else None
 
@@ -299,10 +327,12 @@ def main() -> None:
                     print(dt.strftime("%H:%M ET"), symbol, "skip —", type(e).__name__, str(e)[:80])
                     continue
 
+        elapsed = int(now_sec - last_entry_check_time) // 60 if last_entry_check_time else 0
+        next_entry_min = max(0, entry_interval_min - elapsed)
         if do_entry_check:
-            print(dt.strftime("%H:%M ET"), "— entry check done (once at start). Exits every %d min." % exit_interval_min)
+            print(dt.strftime("%H:%M ET"), "— exits every %d min, next entry check in %d min" % (exit_interval_min, entry_interval_min))
         else:
-            print(dt.strftime("%H:%M ET"), "— exits every %d min. No further entry checks this run." % exit_interval_min)
+            print(dt.strftime("%H:%M ET"), "— next exit in %d min, entry check in %d min" % (exit_interval_min, next_entry_min))
         sys.stdout.flush()
         time.sleep(exit_interval_sec)
 
