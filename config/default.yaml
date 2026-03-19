@@ -97,8 +97,19 @@ universe:
     - BABA
     - JD
     - PDD
-  # Regime filter: skip entries when fewer than this fraction of symbols are above 50D MA (bearish)
-  regime_min_pct_above_50d_ma: 0.30   # e.g. 0.30 = 30%; if < 30%, log "bearish regime" and skip entries
+  # Regime filter: when < 30% above 50D MA = bearish → skip long entries; can still long bear ETFs if breakdown
+  regime_min_pct_above_50d_ma: 0.30
+  # Bear ETFs: long only when regime == bearish and breakdown_detected (reference index below MA)
+  bear_etfs:
+    symbols:
+      - SQQQ
+      - SPXS
+      - TZA
+    breakdown:
+      reference_symbol: QQQ   # breakdown when reference closes below its MA
+      ma_period: 50
+    max_positions: 2          # max concurrent long positions in bear ETFs
+    stop_pct: 2.0
   # Minimum liquidity / volume filters
   min_avg_dollar_volume_30d: 50_000_000
   min_atr_multiple_for_volume: 0.5   # min volume vs ATR-based expectation
@@ -316,7 +327,7 @@ strategy:
     take_profit_pct: null           # no fixed full exit; use partial + trailing
     use_trailing_stop: true
     trailing_stop_pct: 3.0          # trail remainder by this % below high
-    partial_take_profit_pct: 2.0    # take partial at this % gain
+    partial_take_profit_pct: 3.0    # take partial at this % gain
     partial_exit_ratio: 0.5         # sell this fraction (e.g. 0.5 = 50%) at partial target
     time_bars_exit: 25              # exit after 25 bars (20-30 range)
     kill_switch:

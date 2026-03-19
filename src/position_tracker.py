@@ -35,6 +35,7 @@ def add(
     stop_pct: float,
     partial_taken: bool = False,
     trail_high: float | None = None,
+    side: str = "long",
 ) -> None:
     data = load(base_path)
     data[symbol.upper()] = {
@@ -44,6 +45,7 @@ def add(
         "stop_pct": stop_pct,
         "partial_taken": partial_taken,
         "trail_high": float(trail_high) if trail_high is not None else None,
+        "side": (side or "long").strip().lower(),
     }
     save(data, base_path)
 
