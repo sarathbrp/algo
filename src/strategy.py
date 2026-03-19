@@ -235,3 +235,29 @@ class TrendFollowingStrategy:
                     metadata={"ret_pct": ret_pct, "trail_high": high},
                 )
         return None
+
+    def check_exit_short(
+        self,
+        symbol: str,
+        entry_price: float,
+        current_price: float,
+        bars_held: int,
+        stop_pct: float,
+        take_profit_pct: float,
+        time_bars_exit: int,
+        spread_pct: float | None = None,
+        atr_pct: float | None = None,
+    ) -> ExitSignal | None:
+        """Exit rules for short: stop when price rises, take profit when price falls. atr_pct for kill-switch."""
+        ret_pct = (entry_price - current_price) / entry_price * 100  # profit when price falls
+        if ret_pct <= -stop_pct:
+            return ExitSignal(symbol=symbol, reason=ExitReason.STOP_LOSS, metadata={"ret_pct": ret_pct})
+        if bars_held >= time_bars_exit:
+            return ExitSignal(symbol=symbol, reason=ExitReason.TIME_BARS, metadata={"bars_held": bars_held})
+        if spread_pct is not None and spread_pct > self.kill_switch_max_spread_pct:
+            return ExitSignal(symbol=symbol, reason=ExitReason.KILL_SWITCH, metadata={"spread_pct": spread_pct})
+        if atr_pct is not None and atr_pct > self.kill_switch_max_atr_pct:
+            return ExitSignal(symbol=symbol, reason=ExitReason.KILL_SWITCH, metadata={"atr_pct": atr_pct})
+        if ret_pct >= take_profit_pct:
+            return ExitSignal(symbol=symbol, reason=ExitReason.TAKE_PROFIT, metadata={"ret_pct": ret_pct})
+        return None

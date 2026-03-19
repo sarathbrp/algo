@@ -103,9 +103,14 @@ def main() -> None:
             sym = p["symbol"]
             if sym not in tracked:
                 cost = float(p.get("cost_basis") or 0)
-                qty = int(float(p.get("qty") or 0))
-                entry = cost / qty if qty else 0
-                add_tracked(tracker_path, sym, qty, entry, 1.5)
+                qty_raw = int(float(p.get("qty") or 0))
+                qty = abs(qty_raw)
+                side = (p.get("side") or "long").strip().lower()
+                if side != "long" and side != "short":
+                    side = "short" if qty_raw < 0 else "long"
+                # For shorts Alpaca may report cost_basis as proceeds; entry = price per share (positive)
+                entry = abs(cost / qty_raw) if qty_raw else 0
+                add_tracked(tracker_path, sym, qty, entry, 1.5, side=side)
         tracked = load_tracked(tracker_path)
         current_positions = {p["symbol"]: {"notional": p["market_value"], "stop_pct": tracked.get(p["symbol"], {}).get("stop_pct", 1.5)} for p in positions}
         sector_exposure_pct = {}
@@ -115,10 +120,11 @@ def main() -> None:
         print(dt.strftime("%H:%M ET"), "— equity $%.0f, checking %d symbols..." % (account_equity, len(symbols)))
         sys.stdout.flush()
 
-        # ----- Sell decisions: check exit rules for each tracked position -----
+        # ----- Exit rules for each tracked position (long only; cover any legacy shorts) -----
         for symbol in list(tracked.keys()):
             pos = tracked[symbol]
             qty = int(pos.get("qty", 0))
+            side = (pos.get("side") or "long").strip().lower()
             if qty <= 0:
                 remove_tracked(tracker_path, symbol)
                 continue
@@ -137,20 +143,31 @@ def main() -> None:
                 partial_taken = bool(pos.get("partial_taken", False))
                 trail_high_val = pos.get("trail_high")
                 trail_high_f = float(trail_high_val) if trail_high_val is not None else None
+                atr_pct_exit = None
+                if symbol in symbols:
+                    try:
+                        df_ex = broker.get_bars(symbol, timeframe="1Day", limit=20)
+                        if not df_ex.empty and len(df_ex) >= 14:
+                            atr = _atr(df_ex["high"], df_ex["low"], df_ex["close"], 14)
+                            atr_pct_exit = (atr.iloc[-1] / df_ex["close"].iloc[-1]) * 100
+                    except Exception:
+                        pass
+                # Legacy short: cover only (no new shorts opened)
+                if side == "short":
+                    exit_signal = engine.strategy.check_exit_short(
+                        symbol, entry_price, quote.mid, bars, 1.5, 2.0, 10, quote.spread_pct, atr_pct_exit
+                    )
+                    if exit_signal:
+                        cover_order = engine.execution.build_order(symbol, "buy", qty, quote.mid, quote.spread_pct)
+                        if cover_order:
+                            broker.submit_order(cover_order)
+                            print(dt.strftime("%H:%M ET"), symbol, "COVER", qty, "shares (legacy short) —", exit_signal.reason.value)
+                        remove_tracked(tracker_path, symbol)
+                    continue
                 if partial_taken:
                     new_high = max(trail_high_f or entry_price, quote.mid)
                     update_tracked(tracker_path, symbol, trail_high=new_high)
                     trail_high_f = new_high
-                # ATR% = (ATR/close)*100 for kill-switch (same unit as config max_atr_pct)
-                atr_pct_exit = None
-                if symbol in symbols:
-                    try:
-                        df = broker.get_bars(symbol, timeframe="1Day", limit=20)
-                        if not df.empty and len(df) >= 14:
-                            atr = _atr(df["high"], df["low"], df["close"], 14)
-                            atr_pct_exit = (atr.iloc[-1] / df["close"].iloc[-1]) * 100
-                    except Exception:
-                        pass
                 exit_signal = engine.check_exit(
                     symbol,
                     entry_price,
@@ -195,8 +212,9 @@ def main() -> None:
         if do_entry_check:
             last_entry_check_time = now_sec
 
+        bearish_regime = False
         if do_entry_check:
-            # Regime filter: skip entries if < 30% of universe are above 50D MA (bearish regime)
+            # Regime filter: if < 30% above 50D MA = bearish → short weak stocks; else long entries
             above_50d = 0
             total_with_bars = 0
             try:
@@ -212,8 +230,8 @@ def main() -> None:
                 if total_with_bars > 0:
                     pct_above = above_50d / total_with_bars
                     if pct_above < regime_pct_above_50d_ma:
-                        print(dt.strftime("%H:%M ET"), "— bearish regime: %.0f%% above 50D MA (min %.0f%%) — skipping entries" % (pct_above * 100, regime_pct_above_50d_ma * 100))
-                        do_entry_check = False
+                        bearish_regime = True
+                        print(dt.strftime("%H:%M ET"), "— bearish regime: %.0f%% above 50D MA — shorting weak stocks" % (pct_above * 100))
             except Exception as e:
                 if verbose:
                     print(dt.strftime("%H:%M ET"), "— regime filter skip:", type(e).__name__, str(e)[:50])
@@ -242,90 +260,162 @@ def main() -> None:
             available_cash = broker.get_buying_power()
             ma_fast_period = engine.strategy.ma_fast
             ma_slow_period = engine.strategy.ma_slow
-            for symbol in symbols:
-                if symbol in current_positions:
-                    if verbose:
-                        print("  %s: skip — already_have_position" % symbol)
-                    continue
-                if symbol.upper() in open_order_symbols:
-                    if verbose:
-                        print("  %s: skip — open_order_exists" % symbol)
-                    continue
-                if symbol.upper() in tracked:
-                    if verbose:
-                        print("  %s: skip — in_tracked_state" % symbol)
-                    continue
-                try:
-                    df = broker.get_bars(symbol, timeframe="1Day", limit=220)
-                    if df.empty or len(df) < max(200, ma_slow_period):
-                        if verbose:
-                            print("  %s: skip — not_enough_bars (got %d)" % (symbol, len(df) if not df.empty else 0))
-                        continue
-                    close = float(df["close"].iloc[-1])
-                    # Cheap prefilter: MA checks before quote or full strategy
-                    if len(df) >= ma_fast_period:
-                        ma_fast = float(df["close"].rolling(ma_fast_period).mean().iloc[-1])
-                        if close <= ma_fast:
-                            if verbose:
-                                print("  %s: skip — below_fast_ma" % symbol)
-                            continue
-                    if len(df) >= ma_slow_period:
-                        ma_slow = float(df["close"].rolling(ma_slow_period).mean().iloc[-1])
-                        if close <= ma_slow:
-                            if verbose:
-                                print("  %s: skip — below_slow_ma" % symbol)
-                            continue
-                    quote = broker.get_latest_quote(symbol)
-                    if quote and getattr(quote, "is_stale", None) and quote.is_stale(stale_quote_max_age):
-                        spread_pct = 0.15
-                    else:
-                        spread_pct = quote.spread_pct if quote else 0.15
-                    spread_cap = engine.market_quality._max_spread_for_symbol(symbol)
-                    if spread_pct is not None and spread_pct > spread_cap:
-                        if verbose:
-                            print("  %s: skip — spread_too_high (%.2f%% > %.2f%%)" % (symbol, spread_pct, spread_cap))
-                        continue
-                    est_buying_power_required = close * 1  # min 1 share
-                    if est_buying_power_required > available_cash:
-                        if verbose:
-                            print("  %s: skip — insufficient_buying_power (est $%.0f > $%.0f)" % (symbol, est_buying_power_required, available_cash))
-                        continue
-                    atr = _atr(df["high"], df["low"], df["close"], 14)
-                    atr_pct = (atr.iloc[-1] / df["close"].iloc[-1]) * 100 if len(atr) else None
 
-                    decision = engine.run_entry_gates(
-                        symbol=symbol,
-                        dt=dt,
-                        account_equity=account_equity,
-                        current_positions=current_positions,
-                        sector_exposure_pct=sector_exposure_pct,
-                        spread_pct=spread_pct,
-                        volume_atr_ratio=1.5,
-                        atr_pct=atr_pct,
-                        ohlcv_df=df,
-                        symbol_sector=None,
-                        log_strategy_context=verbose,
-                        regime_size_multiplier=regime_multiplier,
-                    )
-                    if decision.allowed and decision.order_request:
-                        notional = (decision.position_sizing.notional if decision.position_sizing else 0) or 0
-                        buying_power = broker.get_buying_power()
-                        if notional > buying_power:
-                            print(dt.strftime("%H:%M ET"), symbol, "skip — insufficient buying power (need $%.0f, have $%.0f)" % (notional, buying_power))
-                            continue
-                        order = broker.submit_order(decision.order_request)
-                        qty_bought = decision.position_sizing.shares if decision.position_sizing else 0
-                        entry_price = float(df["close"].iloc[-1]) if not df.empty else quote.mid
-                        stop_pct = decision.entry_signal.stop_pct if decision.entry_signal else 1.5
-                        add_tracked(tracker_path, symbol, qty_bought, entry_price, stop_pct)
-                        print(dt.strftime("%H:%M ET"), symbol, "BUY", qty_bought, "shares", getattr(order, "id", ""))
-                        current_positions[symbol] = {"notional": notional, "stop_pct": stop_pct}
-                    else:
-                        if verbose:
-                            print("  %s: %s" % (symbol, decision.reason or "no entry signal"))
+            # Bear ETFs (SQQQ, SPXS, TZA): long only when bearish + breakdown (e.g. QQQ below 50D MA)
+            bear_etfs_cfg = config.get("universe", {}).get("bear_etfs", {})
+            bear_etf_symbols = bear_etfs_cfg.get("symbols") or []
+            breakdown_cfg = bear_etfs_cfg.get("breakdown", {}) or {}
+            ref_symbol = breakdown_cfg.get("reference_symbol") or "QQQ"
+            breakdown_ma_period = int(breakdown_cfg.get("ma_period") or 50)
+            breakdown_detected = False
+            if bearish_regime and bear_etf_symbols and ref_symbol:
+                try:
+                    ref_bars = broker.get_bars(ref_symbol, timeframe="1Day", limit=breakdown_ma_period + 10)
+                    if not ref_bars.empty and len(ref_bars) >= breakdown_ma_period:
+                        ref_close = float(ref_bars["close"].iloc[-1])
+                        ref_ma = float(ref_bars["close"].rolling(breakdown_ma_period).mean().iloc[-1])
+                        if ref_close < ref_ma:
+                            breakdown_detected = True
+                            if verbose:
+                                print(dt.strftime("%H:%M ET"), "— breakdown: %s below %dD MA (%.2f < %.2f)" % (ref_symbol, breakdown_ma_period, ref_close, ref_ma))
                 except Exception as e:
-                    print(dt.strftime("%H:%M ET"), symbol, "skip —", type(e).__name__, str(e)[:80])
-                    continue
+                    if verbose:
+                        print(dt.strftime("%H:%M ET"), "— breakdown check skip:", type(e).__name__, str(e)[:40])
+
+            if bearish_regime and breakdown_detected and bear_etf_symbols:
+                # Long bear ETFs (SQQQ, SPXS, TZA) when regime is bearish and breakdown detected
+                max_bear_etf_positions = int(bear_etfs_cfg.get("max_positions") or 2)
+                bear_etf_stop_pct = float(bear_etfs_cfg.get("stop_pct") or 2.0)
+                current_bear_etf = sum(1 for s in bear_etf_symbols if s in current_positions or s.upper() in tracked)
+                for symbol in bear_etf_symbols:
+                    if current_bear_etf >= max_bear_etf_positions:
+                        break
+                    if symbol in current_positions or symbol.upper() in open_order_symbols or symbol.upper() in tracked:
+                        continue
+                    try:
+                        df = broker.get_bars(symbol, timeframe="1Day", limit=60)
+                        if df.empty or len(df) < 20:
+                            continue
+                        close = float(df["close"].iloc[-1])
+                        quote = broker.get_latest_quote(symbol)
+                        if quote and getattr(quote, "is_stale", None) and quote.is_stale(stale_quote_max_age):
+                            spread_pct = 0.15
+                        else:
+                            spread_pct = quote.spread_pct if quote else 0.15
+                        spread_cap = engine.market_quality._max_spread_for_symbol(symbol)
+                        if spread_pct is not None and spread_pct > spread_cap:
+                            continue
+                        if close * 1 > available_cash:
+                            continue
+                        sizing = engine.sizer.size_position(
+                            account_equity,
+                            close,
+                            bear_etf_stop_pct,
+                            symbol,
+                            current_positions,
+                            sector_exposure_pct,
+                            symbol_sector=None,
+                        )
+                        if not sizing or sizing.shares <= 0:
+                            continue
+                        buy_order = engine.execution.build_order(symbol, "buy", sizing.shares, quote.mid if quote else close, spread_pct or 0.15)
+                        if not buy_order:
+                            continue
+                        broker.submit_order(buy_order)
+                        add_tracked(tracker_path, symbol, sizing.shares, close, bear_etf_stop_pct, side="long")
+                        current_bear_etf += 1
+                        current_positions[symbol] = {"notional": sizing.notional, "stop_pct": bear_etf_stop_pct}
+                        print(dt.strftime("%H:%M ET"), symbol, "BUY (bear ETF, breakdown)", sizing.shares, "shares")
+                    except Exception as e:
+                        if verbose:
+                            print("  %s: bear ETF skip —" % symbol, type(e).__name__, str(e)[:60])
+                        continue
+
+            if not bearish_regime:
+                for symbol in symbols:
+                    if symbol in current_positions:
+                        if verbose:
+                            print("  %s: skip — already_have_position" % symbol)
+                        continue
+                    if symbol.upper() in open_order_symbols:
+                        if verbose:
+                            print("  %s: skip — open_order_exists" % symbol)
+                        continue
+                    if symbol.upper() in tracked:
+                        if verbose:
+                            print("  %s: skip — in_tracked_state" % symbol)
+                        continue
+                    try:
+                        df = broker.get_bars(symbol, timeframe="1Day", limit=220)
+                        if df.empty or len(df) < max(200, ma_slow_period):
+                            if verbose:
+                                print("  %s: skip — not_enough_bars (got %d)" % (symbol, len(df) if not df.empty else 0))
+                            continue
+                        close = float(df["close"].iloc[-1])
+                        # Cheap prefilter: MA checks before quote or full strategy
+                        if len(df) >= ma_fast_period:
+                            ma_fast = float(df["close"].rolling(ma_fast_period).mean().iloc[-1])
+                            if close <= ma_fast:
+                                if verbose:
+                                    print("  %s: skip — below_fast_ma" % symbol)
+                                continue
+                        if len(df) >= ma_slow_period:
+                            ma_slow = float(df["close"].rolling(ma_slow_period).mean().iloc[-1])
+                            if close <= ma_slow:
+                                if verbose:
+                                    print("  %s: skip — below_slow_ma" % symbol)
+                                continue
+                        quote = broker.get_latest_quote(symbol)
+                        if quote and getattr(quote, "is_stale", None) and quote.is_stale(stale_quote_max_age):
+                            spread_pct = 0.15
+                        else:
+                            spread_pct = quote.spread_pct if quote else 0.15
+                        spread_cap = engine.market_quality._max_spread_for_symbol(symbol)
+                        if spread_pct is not None and spread_pct > spread_cap:
+                            if verbose:
+                                print("  %s: skip — spread_too_high (%.2f%% > %.2f%%)" % (symbol, spread_pct, spread_cap))
+                            continue
+                        est_buying_power_required = close * 1  # min 1 share
+                        if est_buying_power_required > available_cash:
+                            if verbose:
+                                print("  %s: skip — insufficient_buying_power (est $%.0f > $%.0f)" % (symbol, est_buying_power_required, available_cash))
+                            continue
+                        atr = _atr(df["high"], df["low"], df["close"], 14)
+                        atr_pct = (atr.iloc[-1] / df["close"].iloc[-1]) * 100 if len(atr) else None
+
+                        decision = engine.run_entry_gates(
+                            symbol=symbol,
+                            dt=dt,
+                            account_equity=account_equity,
+                            current_positions=current_positions,
+                            sector_exposure_pct=sector_exposure_pct,
+                            spread_pct=spread_pct,
+                            volume_atr_ratio=1.5,
+                            atr_pct=atr_pct,
+                            ohlcv_df=df,
+                            symbol_sector=None,
+                            log_strategy_context=verbose,
+                            regime_size_multiplier=regime_multiplier,
+                        )
+                        if decision.allowed and decision.order_request:
+                            notional = (decision.position_sizing.notional if decision.position_sizing else 0) or 0
+                            buying_power = broker.get_buying_power()
+                            if notional > buying_power:
+                                print(dt.strftime("%H:%M ET"), symbol, "skip — insufficient buying power (need $%.0f, have $%.0f)" % (notional, buying_power))
+                                continue
+                            order = broker.submit_order(decision.order_request)
+                            qty_bought = decision.position_sizing.shares if decision.position_sizing else 0
+                            entry_price = float(df["close"].iloc[-1]) if not df.empty else quote.mid
+                            stop_pct = decision.entry_signal.stop_pct if decision.entry_signal else 1.5
+                            add_tracked(tracker_path, symbol, qty_bought, entry_price, stop_pct)
+                            print(dt.strftime("%H:%M ET"), symbol, "BUY", qty_bought, "shares", getattr(order, "id", ""))
+                            current_positions[symbol] = {"notional": notional, "stop_pct": stop_pct}
+                        else:
+                            if verbose:
+                                print("  %s: %s" % (symbol, decision.reason or "no entry signal"))
+                    except Exception as e:
+                        print(dt.strftime("%H:%M ET"), symbol, "skip —", type(e).__name__, str(e)[:80])
+                        continue
 
         elapsed = int(now_sec - last_entry_check_time) // 60 if last_entry_check_time else 0
         next_entry_min = max(0, entry_interval_min - elapsed)
