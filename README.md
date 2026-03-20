@@ -15,16 +15,16 @@ The structure is inspired by [QuantConnect Lean](https://github.com/QuantConnect
 ## Rules Implemented
 
 ### 1) Universe & Data
-- **High-liquidity only**: Configurable symbols (e.g. S&P 500 / top-volume ETFs like SPY, QQQ).
+- **Default live universe** (`config/default.yaml` → `universe.symbols`): **SPY, QQQ, IWM**; **XLF, XLK, XLE, GLD**; **AAPL, MSFT, NVDA, AMZN, META, GOOGL, AMD, TSLA**; **BABA, JD, PDD**. Use `universe.paused_symbols` to exclude names without editing the main list.
+- **Bearish regime / inverse ETFs**: When &lt;30% of the universe is above its 50D MA, long trend entries are skipped. If **QQQ** is below its 50D MA (**breakdown**), the loop may **long** inverse ETFs **SQQQ** and **SPXS** only (**TZA** removed). Settings: `universe.bear_etfs` — **`max_positions: 1`** (only one inverse ETF at a time), **`max_exposure_pct_equity: 20`** (cap inverse ETF notional at 20% of equity).
 - **Market sessions**: Pre-market (no trade), regular hours (trade), after-hours (no trade); holidays supported.
-- **Market quality gate**: Max spread %, min volume/ATR ratio, optional block on volatility/news spike (ATR multiple).
-- **Trade filters** (optional): **Macro-event blackout** (no trade on FOMC/CPI dates or time windows); **earnings blackout** per symbol (N days before/after earnings); **volatility/spread do-not-trade** (stricter ATR%/spread thresholds); **position sizing reduction** in high-vol regimes (e.g. half size when ATR% &gt; threshold).
+- **Market quality gate**: Max spread %, min volume/ATR ratio, optional block on volatility spike (ATR%).
+- **Trade filters** (optional): **Macro-event blackout**; **earnings blackout** per symbol; **volatility/spread do-not-trade**; **position sizing reduction** in high-vol regimes.
 
-### News + FinBERT (optional)
-- **Pipeline**: [NewsAPI](https://newsapi.org/) headlines → **FinBERT** sentiment (~`[-1, 1]`) → rule engine in `scripts/run_alpaca_loop.py`.
-- **BUY**: positive sentiment (config threshold) **and** volume spike (last-day volume / N-day avg ≥ `volume_spike_min`). Can enter even when price is below trend MAs if both hold; still passes full `TradingEngine` gates (spread, risk, compliance).
-- **SELL**: negative sentiment **and** weak trend (close &lt; MA(`weak_trend_ma_period`)).
-- **Setup**: `pip install -r requirements-news.txt`, set `NEWSAPI_KEY`, set `news_sentiment.enabled: true` in `config/default.yaml`. First FinBERT run downloads the model from Hugging Face.
+### News + FinBERT (optional — off for live)
+- **Live trading**: `scripts/run_alpaca_loop.py` with **`--live`** (or `python lean live --live`) **forces** `news_sentiment.enabled` off so NewsAPI/FinBERT **do not** run on a real-money session.
+- **Paper / research**: You may set `news_sentiment.enabled: true` in `config/default.yaml` when **not** using `--live`. Pipeline: [NewsAPI](https://newsapi.org/) → **FinBERT** → rules in `run_alpaca_loop` (buy: positive sentiment + volume spike; sell: negative + weak trend vs MA).
+- **Setup** (paper only): `pip install -r requirements-news.txt`, `NEWSAPI_KEY`, enable in config.
 
 ### 2) Entry/Exit (Mechanical)
 - **Default strategy**: Trend-following — price above 200D MA, pullback to 20D MA, volatility filter (max ATR%).
@@ -145,7 +145,7 @@ This uses your Alpaca account (paper or live) for equity and positions, fetches 
 
 **Nothing trading on live?** Run the loop with **`--verbose`** to see why each symbol is skipped:  
 `python scripts/run_alpaca_loop.py --live --verbose`  
-Common reasons: market closed (only 9:30–16:00 ET); "no entry signal" (strategy needs price above 200D MA + pullback to 20D MA, so many days no symbol qualifies); or another gate (spread, risk, PDT). One-shot run prints the reason: `python scripts/run_alpaca.py --live`.
+Common reasons: market closed (only 9:30–16:00 ET); "no entry signal" (trend strategy + gates); or spread / risk / PDT. **News sentiment is disabled automatically on `--live`.** One-shot: `python scripts/run_alpaca.py --live`.
 
 ## Run Example (no broker)
 
@@ -159,7 +159,7 @@ This runs the full entry gate sequence for a sample symbol (SPY) with synthetic 
 
 Edit `config/default.yaml` to:
 
-- Set **universe** symbols and liquidity filters.
+- Set **universe** symbols (default: SPY/QQQ/IWM, sector ETFs, mega-cap tech, China ADRs), **paused_symbols**, **bear_etfs** (SQQQ/SPXS, max 1 position, 20% equity cap), and liquidity filters.
 - Adjust **market_sessions** (pre-market, regular, after-hours) and **market_quality** (spread %, volume/ATR, news spike).
 - Tune **strategy** (e.g. MA periods, stop/target, time exit, kill-switch).
 - Set **position_sizing** (risk per trade, max open risk, symbol/sector caps).
