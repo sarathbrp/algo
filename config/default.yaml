@@ -5,98 +5,126 @@
 # 1) Universe & Data (Lean-style: regime = detect only; bot trades expanded universe)
 # ---------------------------------------------------------------------------
 # Market Regime (detect only; not traded): SPY, QQQ, TLT, HYG, VIXY → market_regime.symbols
-# Traded universe below: sector ETFs + stocks by sector (expand like QuantConnect Lean)
+# Traded universe: S&P 100 (largest US large-caps; 101 lines = 100 companies + GOOG/GOOGL).
+# Paused symbols excluded from scan/trade (see paused_symbols).
 universe:
-  symbols:   # All symbols tracked for trading (add/remove per strategy)
-    # ---- Sector / thematic ETFs ----
-    - XLF   # Financials
-    - XLK   # Technology
-    - XLE   # Energy
-    - XLV   # Healthcare
-    - XLI   # Industrials
-    - XLY   # Consumer Discretionary
-    - XLP   # Consumer Staples
-    - XLB   # Materials
-    - XLRE  # Real Estate
-    - GLD   # Gold
-    - SLV   # Silver
-    - IWM   # Russell 2000
-    # ---- Technology ----
+  symbols:
     - AAPL
-    - MSFT
-    - NVDA
-    - AMZN
-    - META
-    - GOOGL
-    - AMD
-    - TSLA
-    - CRM
-    - ORCL
+    - ABBV
+    - ABT
+    - ACN
     - ADBE
+    - AIG
+    - AMD
+    - AMGN
+    - AMT
+    - AMZN
     - AVGO
+    - AXP
+    - BA
+    - BAC
+    - BK
+    - BKNG
+    - BLK
+    - BMY
+    - "BRK.B"
+    - C
+    - CAT
+    - CL
+    - CMCSA
+    - COF
+    - COP
+    - COST
+    - CRM
     - CSCO
-    - INTC
-    - QCOM
+    - CVS
+    - CVX
+    - DE
+    - DHR
+    - DIS
+    - DUK
+    - EMR
+    - FDX
+    - GD
+    - GE
+    - GILD
+    - GM
+    - GOOG
+    - GOOGL
+    - GS
+    - HD
+    - HON
     - IBM
-    - NOW
+    - INTC
     - INTU
-    - AMAT
-    - LRCX
-    - SNOW
+    - ISRG
+    - JNJ
+    - JPM
+    - KO
+    - LIN
+    - LLY
+    - LMT
+    - LOW
+    - MA
+    - MCD
+    - MDLZ
+    - MDT
+    - MET
+    - META
+    - MMM
+    - MO
+    - MRK
+    - MS
+    - MSFT
+    - NEE
+    - NFLX
+    - NKE
+    - NOW
+    - NVDA
+    - ORCL
+    - PEP
+    - PFE
+    - PG
     - PLTR
-    - NET
-    - CRWD
+    - PM
+    - PYPL
+    - QCOM
+    - RTX
+    - SBUX
+    - SCHW
+    - SO
+    - SPG
+    - T
+    - TGT
+    - TMO
+    - TMUS
+    - TSLA
+    - TXN
+    - UBER
+    - UNH
+    - UNP
+    - UPS
+    - USB
+    - V
+    - VZ
+    - WFC
+    - WMT
+    - XOM
+  # Paused: excluded from scan and trade (re-enable by moving back into symbols)
+  paused_symbols:
+    - SNOW
     - PANW
     - SHOP
-    - UBER
-    - ABNB
-    - NFLX
-    # ---- Financials ----
-    - JPM
-    - BAC
-    - GS
-    - MS
+    - CRWD
+    - JPM   # if spread stays bad
     - C
-    - WFC
-    - SCHW
+    - MS
     - AXP
     - BLK
-    # ---- Healthcare ----
-    - UNH
     - JNJ
-    - PFE
     - ABBV
     - MRK
-    - LLY
-    - TMO
-    - ABT
-    - DHR
-    - BMY
-    # ---- Consumer / Retail ----
-    - HD
-    - MCD
-    - NKE
-    - SBUX
-    - TGT
-    - LOW
-    - COST
-    - PG
-    - KO
     - PEP
-    - WMT
-    # ---- Industrial / Defense ----
-    - LMT
-    - NOC
-    - RTX
-    - BA
-    - HON
-    - UPS
-    - CAT
-    - DE
-    # ---- China ADRs / International ----
-    - BABA
-    - JD
-    - PDD
   # Regime filter: when < 30% above 50D MA = bearish → skip long entries; can still long bear ETFs if breakdown
   regime_min_pct_above_50d_ma: 0.30
   # Bear ETFs: long only when regime == bearish and breakdown_detected (reference index below MA)
@@ -109,10 +137,25 @@ universe:
       reference_symbol: QQQ   # breakdown when reference closes below its MA
       ma_period: 50
     max_positions: 2          # max concurrent long positions in bear ETFs
+    max_exposure_pct_equity: 10   # cap total inverse ETF notional at 10% of equity
     stop_pct: 2.0
   # Minimum liquidity / volume filters
   min_avg_dollar_volume_30d: 50_000_000
   min_atr_multiple_for_volume: 0.5   # min volume vs ATR-based expectation
+
+# NewsAPI → FinBERT sentiment → rule engine (optional: pip install -r requirements-news.txt, set NEWSAPI_KEY)
+news_sentiment:
+  enabled: false
+  newsapi_key_env: NEWSAPI_KEY
+  headline_lookback_hours: 24
+  max_headlines: 15
+  cache_ttl_seconds: 900
+  finbert_model: ProsusAI/finbert
+  positive_score_threshold: 0.12   # FinBERT score ~[-1,1]: buy if >= this AND volume spike
+  negative_score_threshold: -0.12  # sell if <= this AND weak trend (close < MA)
+  volume_spike_min: 1.5            # last-day volume / avg prior N days
+  volume_lookback_days: 20
+  weak_trend_ma_period: 20
 
 market_sessions:
   pre_market:

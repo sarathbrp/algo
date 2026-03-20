@@ -101,6 +101,7 @@ class TradingEngine:
         symbol_sector: dict[str, str] | None = None,
         log_strategy_context: bool = False,
         regime_size_multiplier: float | None = None,
+        entry_override: EntrySignal | None = None,
     ) -> TradeDecision:
         """
         Run full gate sequence for an entry. Returns TradeDecision with allowed=False
@@ -214,8 +215,9 @@ class TradingEngine:
                 last_close = float(close.iloc[-1]) if n else None
                 ma_f = float(close.rolling(self.strategy.ma_fast).mean().iloc[-1]) if n >= self.strategy.ma_fast else None
                 ma_s = float(close.rolling(self.strategy.ma_slow).mean().iloc[-1]) if n >= self.strategy.ma_slow else None
+                src = "news_override" if entry_override else "trend"
                 log.info(
-                    "strategy input %s: close=%.2f ma_fast(%d)=%s ma_slow(%d)=%s atr_pct=%s side_candidate=long",
+                    "strategy input %s: close=%.2f ma_fast(%d)=%s ma_slow(%d)=%s atr_pct=%s source=%s",
                     symbol,
                     last_close or 0.0,
                     self.strategy.ma_fast,
@@ -223,13 +225,17 @@ class TradingEngine:
                     self.strategy.ma_slow,
                     f"{ma_s:.2f}" if ma_s is not None else "n/a",
                     f"{atr_pct:.2f}%" if atr_pct is not None else "n/a",
+                    src,
                 )
             except Exception as e:
                 log.debug("strategy context log failed: %s", e)
 
-        entry = self.strategy.generate_entry(symbol, ohlcv_df, spread_pct, atr_pct)
-        if entry is None:
-            return TradeDecision(allowed=False, reason="no entry signal")
+        if entry_override is not None:
+            entry = entry_override
+        else:
+            entry = self.strategy.generate_entry(symbol, ohlcv_df, spread_pct, atr_pct)
+            if entry is None:
+                return TradeDecision(allowed=False, reason="no entry signal")
 
         # Long-only: skip short signals (bearish with no position = skip, not sell-short)
         if entry.side and entry.side.lower() not in ("long", "buy"):
