@@ -4,146 +4,50 @@
 # ---------------------------------------------------------------------------
 # 1) Universe & Data (Lean-style: regime = detect only; bot trades expanded universe)
 # ---------------------------------------------------------------------------
-# Market Regime (detect only; not traded): SPY, QQQ, TLT, HYG, VIXY → market_regime.symbols
-# Traded universe: S&P 100 (largest US large-caps; 101 lines = 100 companies + GOOG/GOOGL).
-# Paused symbols excluded from scan/trade (see paused_symbols).
+# Core live universe: index/sector ETFs + mega-cap tech + China ADRs (inverse ETFs are bear_etfs only).
 universe:
   symbols:
+    # Index / breadth
+    - SPY
+    - QQQ
+    - IWM
+    # Sector / thematic ETFs
+    - XLF
+    - XLK
+    - XLE
+    - GLD
+    # Mega-cap tech
     - AAPL
-    - ABBV
-    - ABT
-    - ACN
-    - ADBE
-    - AIG
-    - AMD
-    - AMGN
-    - AMT
-    - AMZN
-    - AVGO
-    - AXP
-    - BA
-    - BAC
-    - BK
-    - BKNG
-    - BLK
-    - BMY
-    - "BRK.B"
-    - C
-    - CAT
-    - CL
-    - CMCSA
-    - COF
-    - COP
-    - COST
-    - CRM
-    - CSCO
-    - CVS
-    - CVX
-    - DE
-    - DHR
-    - DIS
-    - DUK
-    - EMR
-    - FDX
-    - GD
-    - GE
-    - GILD
-    - GM
-    - GOOG
-    - GOOGL
-    - GS
-    - HD
-    - HON
-    - IBM
-    - INTC
-    - INTU
-    - ISRG
-    - JNJ
-    - JPM
-    - KO
-    - LIN
-    - LLY
-    - LMT
-    - LOW
-    - MA
-    - MCD
-    - MDLZ
-    - MDT
-    - MET
-    - META
-    - MMM
-    - MO
-    - MRK
-    - MS
     - MSFT
-    - NEE
-    - NFLX
-    - NKE
-    - NOW
     - NVDA
-    - ORCL
-    - PEP
-    - PFE
-    - PG
-    - PLTR
-    - PM
-    - PYPL
-    - QCOM
-    - RTX
-    - SBUX
-    - SCHW
-    - SO
-    - SPG
-    - T
-    - TGT
-    - TMO
-    - TMUS
+    - AMZN
+    - META
+    - GOOGL
+    - AMD
     - TSLA
-    - TXN
-    - UBER
-    - UNH
-    - UNP
-    - UPS
-    - USB
-    - V
-    - VZ
-    - WFC
-    - WMT
-    - XOM
-  # Paused: excluded from scan and trade (re-enable by moving back into symbols)
-  paused_symbols:
-    - SNOW
-    - PANW
-    - SHOP
-    - CRWD
-    - JPM   # if spread stays bad
-    - C
-    - MS
-    - AXP
-    - BLK
-    - JNJ
-    - ABBV
-    - MRK
-    - PEP
-  # Regime filter: when < 30% above 50D MA = bearish → skip long entries; can still long bear ETFs if breakdown
+    # China ADRs
+    - BABA
+    - JD
+    - PDD
+  paused_symbols: []   # add tickers here to exclude from scan/trade
+  # Regime filter: when < 30% above 50D MA = bearish → skip long entries; bear ETFs if breakdown
   regime_min_pct_above_50d_ma: 0.30
-  # Bear ETFs: long only when regime == bearish and breakdown_detected (reference index below MA)
+  # Inverse ETFs: SQQQ / SPXS only (no TZA). At most ONE position; total notional cap 20% equity.
   bear_etfs:
     symbols:
       - SQQQ
       - SPXS
-      - TZA
     breakdown:
-      reference_symbol: QQQ   # breakdown when reference closes below its MA
+      reference_symbol: QQQ
       ma_period: 50
-    max_positions: 2          # max concurrent long positions in bear ETFs
-    max_exposure_pct_equity: 10   # cap total inverse ETF notional at 10% of equity
+    max_positions: 1          # only one inverse ETF at a time
+    max_exposure_pct_equity: 20   # cap total inverse ETF notional at 20% of equity
     stop_pct: 2.0
   # Minimum liquidity / volume filters
   min_avg_dollar_volume_30d: 50_000_000
   min_atr_multiple_for_volume: 0.5   # min volume vs ATR-based expectation
 
-# NewsAPI → FinBERT sentiment → rule engine (optional: pip install -r requirements-news.txt, set NEWSAPI_KEY)
+# NewsAPI → FinBERT (optional). Default off; live loop forces OFF when using --live (see run_alpaca_loop).
 news_sentiment:
   enabled: false
   newsapi_key_env: NEWSAPI_KEY

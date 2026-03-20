@@ -44,6 +44,8 @@ def main() -> None:
     config = load_config(config_path)
     if args.live:
         config.setdefault("broker", {})["paper"] = False
+        # News + FinBERT disabled for live trading (bandwidth / latency / signal risk)
+        config.setdefault("news_sentiment", {})["enabled"] = False
     elif args.paper:
         config.setdefault("broker", {})["paper"] = True
 
@@ -75,7 +77,9 @@ def main() -> None:
     news_vol_lookback = int(ns_cfg.get("volume_lookback_days", 20))
 
     print("Running until market close. Exits every %d min, entries every %d min. Ctrl+C to stop." % (exit_interval_min, entry_interval_min))
-    if news_enabled:
+    if args.live:
+        print("News sentiment: OFF (live trading; forced in loop).")
+    elif news_enabled:
         print("News sentiment: ON (NewsAPI + FinBERT). Set %s in env." % (ns_cfg.get("newsapi_key_env") or "NEWSAPI_KEY"))
     print("-" * 50)
 
@@ -248,7 +252,7 @@ def main() -> None:
 
         bearish_regime = False
         if do_entry_check:
-            # Regime filter: if < 30% above 50D MA = bearish → short weak stocks; else long entries
+            # Regime filter: if < 30% above 50D MA = bearish → bear-ETF path; else long entries
             above_50d = 0
             total_with_bars = 0
             try:
@@ -265,7 +269,7 @@ def main() -> None:
                     pct_above = above_50d / total_with_bars
                     if pct_above < regime_pct_above_50d_ma:
                         bearish_regime = True
-                        print(dt.strftime("%H:%M ET"), "— bearish regime: %.0f%% above 50D MA — shorting weak stocks" % (pct_above * 100))
+                        print(dt.strftime("%H:%M ET"), "— bearish regime: %.0f%% above 50D MA — long entries skipped (bear ETFs if breakdown)" % (pct_above * 100))
             except Exception as e:
                 if verbose:
                     print(dt.strftime("%H:%M ET"), "— regime filter skip:", type(e).__name__, str(e)[:50])
