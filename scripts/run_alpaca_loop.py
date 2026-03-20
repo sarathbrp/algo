@@ -23,8 +23,9 @@ from src.brokers.alpaca_client import AlpacaBroker
 from src.strategy import _atr
 from src.universe import MarketCalendar, SessionType
 from src.position_tracker import load as load_tracked, add as add_tracked, remove as remove_tracked, update as update_tracked, bars_held
-from src.strategy import ExitReason
+from src.strategy import ExitReason, EntrySignal
 from src.market_regime import MarketRegimeScorer
+from src.news_sentiment import NewsSentimentPipeline, NewsRuleEngine, volume_spike_ratio
 
 
 def main() -> None:
@@ -67,8 +68,15 @@ def main() -> None:
     mq_cfg = config.get("market_quality", {})
     stale_quote_max_age = float(mq_cfg.get("stale_quote_max_age_seconds", 60))
     regime_pct_above_50d_ma = float(config.get("universe", {}).get("regime_min_pct_above_50d_ma", 0.30))
+    ns_cfg = config.get("news_sentiment") or {}
+    news_enabled = bool(ns_cfg.get("enabled", False))
+    news_pipeline = NewsSentimentPipeline(config) if news_enabled else None
+    news_rules = NewsRuleEngine.from_config(config) if news_enabled else None
+    news_vol_lookback = int(ns_cfg.get("volume_lookback_days", 20))
 
     print("Running until market close. Exits every %d min, entries every %d min. Ctrl+C to stop." % (exit_interval_min, entry_interval_min))
+    if news_enabled:
+        print("News sentiment: ON (NewsAPI + FinBERT). Set %s in env." % (ns_cfg.get("newsapi_key_env") or "NEWSAPI_KEY"))
     print("-" * 50)
 
     while True:
@@ -115,6 +123,8 @@ def main() -> None:
         current_positions = {p["symbol"]: {"notional": p["market_value"], "stop_pct": tracked.get(p["symbol"], {}).get("stop_pct", 1.5)} for p in positions}
         sector_exposure_pct = {}
         symbols = config.get("universe", {}).get("symbols", ["SPY"])
+        paused = {p.upper() for p in config.get("universe", {}).get("paused_symbols", [])}
+        symbols = [s for s in symbols if s.upper() not in paused]
 
         # Heartbeat: so you see the loop is running even when no trades
         print(dt.strftime("%H:%M ET"), "— equity $%.0f, checking %d symbols..." % (account_equity, len(symbols)))
@@ -152,6 +162,30 @@ def main() -> None:
                             atr_pct_exit = (atr.iloc[-1] / df_ex["close"].iloc[-1]) * 100
                     except Exception:
                         pass
+                # News rule: negative sentiment + weak trend → full exit (long only)
+                if side != "short" and news_enabled and news_pipeline and news_rules:
+                    try:
+                        df_news = broker.get_bars(symbol, timeframe="1Day", limit=max(60, news_rules.weak_trend_ma_period + 5))
+                        if not df_news.empty and len(df_news) >= news_rules.weak_trend_ma_period:
+                            sent = news_pipeline.sentiment_for_symbol(symbol)
+                            if news_rules.should_sell(sent, df_news):
+                                sell_order = engine.execution.build_order(symbol, "sell", qty, quote.mid, quote.spread_pct)
+                                if sell_order:
+                                    broker.submit_order(sell_order)
+                                    print(
+                                        dt.strftime("%H:%M ET"),
+                                        symbol,
+                                        "SELL",
+                                        qty,
+                                        "shares —",
+                                        ExitReason.NEWS_SENTIMENT.value,
+                                        "(sent=%.2f)" % sent,
+                                    )
+                                remove_tracked(tracker_path, symbol)
+                                continue
+                    except Exception as e:
+                        if verbose:
+                            print(dt.strftime("%H:%M ET"), symbol, "news exit skip —", type(e).__name__, str(e)[:50])
                 # Legacy short: cover only (no new shorts opened)
                 if side == "short":
                     exit_signal = engine.strategy.check_exit_short(
@@ -286,6 +320,9 @@ def main() -> None:
                 # Long bear ETFs (SQQQ, SPXS, TZA) when regime is bearish and breakdown detected
                 max_bear_etf_positions = int(bear_etfs_cfg.get("max_positions") or 2)
                 bear_etf_stop_pct = float(bear_etfs_cfg.get("stop_pct") or 2.0)
+                max_bear_etf_pct = float(bear_etfs_cfg.get("max_exposure_pct_equity") or 10)
+                max_bear_etf_notional = account_equity * (max_bear_etf_pct / 100.0)
+                current_bear_etf_notional = sum(abs(float(p.get("market_value") or 0)) for p in positions if p.get("symbol") in bear_etf_symbols)
                 current_bear_etf = sum(1 for s in bear_etf_symbols if s in current_positions or s.upper() in tracked)
                 for symbol in bear_etf_symbols:
                     if current_bear_etf >= max_bear_etf_positions:
@@ -318,10 +355,15 @@ def main() -> None:
                         )
                         if not sizing or sizing.shares <= 0:
                             continue
+                        if current_bear_etf_notional + sizing.notional > max_bear_etf_notional:
+                            if verbose:
+                                print("  %s: skip — inverse ETF exposure cap (%.0f%% equity)" % (symbol, max_bear_etf_pct))
+                            continue
                         buy_order = engine.execution.build_order(symbol, "buy", sizing.shares, quote.mid if quote else close, spread_pct or 0.15)
                         if not buy_order:
                             continue
                         broker.submit_order(buy_order)
+                        current_bear_etf_notional += sizing.notional
                         add_tracked(tracker_path, symbol, sizing.shares, close, bear_etf_stop_pct, side="long")
                         current_bear_etf += 1
                         current_positions[symbol] = {"notional": sizing.notional, "stop_pct": bear_etf_stop_pct}
@@ -352,19 +394,30 @@ def main() -> None:
                                 print("  %s: skip — not_enough_bars (got %d)" % (symbol, len(df) if not df.empty else 0))
                             continue
                         close = float(df["close"].iloc[-1])
-                        # Cheap prefilter: MA checks before quote or full strategy
+                        # Trend prefilter: above MAs OR (news sentiment + volume spike) when enabled
+                        trend_long_ok = True
                         if len(df) >= ma_fast_period:
                             ma_fast = float(df["close"].rolling(ma_fast_period).mean().iloc[-1])
                             if close <= ma_fast:
-                                if verbose:
-                                    print("  %s: skip — below_fast_ma" % symbol)
-                                continue
+                                trend_long_ok = False
                         if len(df) >= ma_slow_period:
                             ma_slow = float(df["close"].rolling(ma_slow_period).mean().iloc[-1])
                             if close <= ma_slow:
-                                if verbose:
-                                    print("  %s: skip — below_slow_ma" % symbol)
-                                continue
+                                trend_long_ok = False
+
+                        sentiment_score = 0.0
+                        vol_ratio = None
+                        news_buy = False
+                        if news_enabled and news_pipeline and news_rules:
+                            sentiment_score = news_pipeline.sentiment_for_symbol(symbol)
+                            vol_ratio = volume_spike_ratio(df, news_vol_lookback)
+                            news_buy = news_rules.should_buy(sentiment_score, vol_ratio)
+
+                        if not trend_long_ok and not news_buy:
+                            if verbose:
+                                print("  %s: skip — below_MA and not (positive_news+vol_spike)" % symbol)
+                            continue
+
                         quote = broker.get_latest_quote(symbol)
                         if quote and getattr(quote, "is_stale", None) and quote.is_stale(stale_quote_max_age):
                             spread_pct = 0.15
@@ -383,21 +436,55 @@ def main() -> None:
                         atr = _atr(df["high"], df["low"], df["close"], 14)
                         atr_pct = (atr.iloc[-1] / df["close"].iloc[-1]) * 100 if len(atr) else None
 
-                        decision = engine.run_entry_gates(
-                            symbol=symbol,
-                            dt=dt,
-                            account_equity=account_equity,
-                            current_positions=current_positions,
-                            sector_exposure_pct=sector_exposure_pct,
-                            spread_pct=spread_pct,
-                            volume_atr_ratio=1.5,
-                            atr_pct=atr_pct,
-                            ohlcv_df=df,
-                            symbol_sector=None,
-                            log_strategy_context=verbose,
-                            regime_size_multiplier=regime_multiplier,
-                        )
-                        if decision.allowed and decision.order_request:
+                        min_vol_atr = engine.market_quality.min_volume_atr_ratio
+                        vol_atr_g = max(min_vol_atr, float(vol_ratio)) if vol_ratio is not None else 1.5
+
+                        decision = None
+                        if trend_long_ok:
+                            decision = engine.run_entry_gates(
+                                symbol=symbol,
+                                dt=dt,
+                                account_equity=account_equity,
+                                current_positions=current_positions,
+                                sector_exposure_pct=sector_exposure_pct,
+                                spread_pct=spread_pct,
+                                volume_atr_ratio=vol_atr_g,
+                                atr_pct=atr_pct,
+                                ohlcv_df=df,
+                                symbol_sector=None,
+                                log_strategy_context=verbose,
+                                regime_size_multiplier=regime_multiplier,
+                            )
+                        if (decision is None or not decision.allowed) and news_buy:
+                            entry_override = EntrySignal(
+                                symbol=symbol,
+                                side="long",
+                                strength=float(sentiment_score),
+                                stop_pct=engine.strategy.stop_loss_pct,
+                                take_profit_pct=engine.strategy.take_profit_pct,
+                                time_bars_exit=engine.strategy.time_bars_exit,
+                                metadata={
+                                    "source": "news_sentiment",
+                                    "news_sentiment": sentiment_score,
+                                    "volume_ratio": vol_ratio,
+                                },
+                            )
+                            decision = engine.run_entry_gates(
+                                symbol=symbol,
+                                dt=dt,
+                                account_equity=account_equity,
+                                current_positions=current_positions,
+                                sector_exposure_pct=sector_exposure_pct,
+                                spread_pct=spread_pct,
+                                volume_atr_ratio=vol_atr_g,
+                                atr_pct=atr_pct,
+                                ohlcv_df=df,
+                                symbol_sector=None,
+                                log_strategy_context=verbose,
+                                regime_size_multiplier=regime_multiplier,
+                                entry_override=entry_override,
+                            )
+                        if decision is not None and decision.allowed and decision.order_request:
                             notional = (decision.position_sizing.notional if decision.position_sizing else 0) or 0
                             buying_power = broker.get_buying_power()
                             if notional > buying_power:
@@ -408,10 +495,14 @@ def main() -> None:
                             entry_price = float(df["close"].iloc[-1]) if not df.empty else quote.mid
                             stop_pct = decision.entry_signal.stop_pct if decision.entry_signal else 1.5
                             add_tracked(tracker_path, symbol, qty_bought, entry_price, stop_pct)
-                            print(dt.strftime("%H:%M ET"), symbol, "BUY", qty_bought, "shares", getattr(order, "id", ""))
+                            src = (decision.entry_signal.metadata or {}).get("source") if decision.entry_signal else None
+                            if src == "news_sentiment":
+                                print(dt.strftime("%H:%M ET"), symbol, "BUY", qty_bought, "shares (news+vol spike)", getattr(order, "id", ""))
+                            else:
+                                print(dt.strftime("%H:%M ET"), symbol, "BUY", qty_bought, "shares", getattr(order, "id", ""))
                             current_positions[symbol] = {"notional": notional, "stop_pct": stop_pct}
                         else:
-                            if verbose:
+                            if verbose and decision is not None:
                                 print("  %s: %s" % (symbol, decision.reason or "no entry signal"))
                     except Exception as e:
                         print(dt.strftime("%H:%M ET"), symbol, "skip —", type(e).__name__, str(e)[:80])

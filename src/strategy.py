@@ -28,6 +28,7 @@ class ExitReason(Enum):
     TIME_BARS = "time_bars"
     KILL_SWITCH = "kill_switch"
     SIGNAL_EXIT = "signal_exit"
+    NEWS_SENTIMENT = "news_sentiment"  # negative sentiment + weak trend (rule engine)
 
 
 @dataclass

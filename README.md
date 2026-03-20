@@ -20,6 +20,12 @@ The structure is inspired by [QuantConnect Lean](https://github.com/QuantConnect
 - **Market quality gate**: Max spread %, min volume/ATR ratio, optional block on volatility/news spike (ATR multiple).
 - **Trade filters** (optional): **Macro-event blackout** (no trade on FOMC/CPI dates or time windows); **earnings blackout** per symbol (N days before/after earnings); **volatility/spread do-not-trade** (stricter ATR%/spread thresholds); **position sizing reduction** in high-vol regimes (e.g. half size when ATR% &gt; threshold).
 
+### News + FinBERT (optional)
+- **Pipeline**: [NewsAPI](https://newsapi.org/) headlines → **FinBERT** sentiment (~`[-1, 1]`) → rule engine in `scripts/run_alpaca_loop.py`.
+- **BUY**: positive sentiment (config threshold) **and** volume spike (last-day volume / N-day avg ≥ `volume_spike_min`). Can enter even when price is below trend MAs if both hold; still passes full `TradingEngine` gates (spread, risk, compliance).
+- **SELL**: negative sentiment **and** weak trend (close &lt; MA(`weak_trend_ma_period`)).
+- **Setup**: `pip install -r requirements-news.txt`, set `NEWSAPI_KEY`, set `news_sentiment.enabled: true` in `config/default.yaml`. First FinBERT run downloads the model from Hugging Face.
+
 ### 2) Entry/Exit (Mechanical)
 - **Default strategy**: Trend-following — price above 200D MA, pullback to 20D MA, volatility filter (max ATR%).
 - **Exits defined before entries**:  
@@ -77,6 +83,7 @@ algo/
 │   ├── execution.py
 │   ├── compliance.py
 │   ├── trading_engine.py  # Full gates for live trading
+│   ├── news_sentiment/    # NewsAPI + FinBERT + rule helpers
 │   └── brokers/
 │       └── alpaca_client.py
 ├── scripts/
