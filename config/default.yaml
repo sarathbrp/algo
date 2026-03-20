@@ -34,7 +34,7 @@ universe:
   paused_symbols: []   # add tickers here to exclude from scan/trade
   # Regime filter: when < 30% above 50D MA = bearish → skip long entries; bear ETFs if breakdown
   regime_min_pct_above_50d_ma: 0.30
-  # Inverse ETFs: SQQQ / SPXS only (no TZA). At most ONE position; total notional cap 20% equity.
+  # Inverse ETFs: at most ONE position; total notional cap (see max_exposure_pct_equity).
   bear_etfs:
     symbols:
       - SQQQ
@@ -42,9 +42,14 @@ universe:
     breakdown:
       reference_symbol: QQQ
       ma_period: 50
+    # When breakdown reference is QQQ, only consider SQQQ (3x Nasdaq hedge). Other refs use full symbols list.
+    prefer_sqqq_when_breakdown_reference_is_qqq: true
     max_positions: 1          # only one inverse ETF at a time
-    max_exposure_pct_equity: 20   # cap total inverse ETF notional at 20% of equity
+    max_exposure_pct_equity: 30   # cap total inverse ETF notional at 30% of equity
     stop_pct: 2.0
+  # Bearish regime: by default no new trend longs. Optionally allow some, capped:
+  bearish_allow_trend_long_entries: false   # true = still run entry scan when bearish (subject to max below)
+  bearish_max_normal_long_positions: null    # e.g. 4 — max non-inverse long positions when bearish (null = no cap)
   # Minimum liquidity / volume filters
   min_avg_dollar_volume_30d: 50_000_000
   min_atr_multiple_for_volume: 0.5   # min volume vs ATR-based expectation
@@ -287,9 +292,11 @@ strategy:
 # 3) Position Sizing
 # ---------------------------------------------------------------------------
 position_sizing:
-  risk_per_trade_pct: 0.5      # 0.25 - 1.0
+  risk_per_trade_pct: 0.25     # 0.25 - 1.0 of equity at risk per trade
   max_open_risk_pct: 3.0       # sum of stop distances cap (2-5%)
-  max_exposure_per_symbol_pct: 40.0   # max % of account in any single position
+  # Per position: min(% of equity, dollar cap) — alias intent: max_position_pct_equity / max_position_dollar_cap
+  max_exposure_per_symbol_pct: 8.0    # max % of account in any single position
+  max_position_dollar_cap: 2000       # hard USD cap per new position (null = no cap)
   max_exposure_per_sector_pct: 40.0
   # Position sizing reduction during high volatility regimes
   high_vol_reduction:

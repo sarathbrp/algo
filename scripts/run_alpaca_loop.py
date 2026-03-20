@@ -299,12 +299,21 @@ def main() -> None:
             ma_fast_period = engine.strategy.ma_fast
             ma_slow_period = engine.strategy.ma_slow
 
-            # Bear ETFs (SQQQ, SPXS, TZA): long only when bearish + breakdown (e.g. QQQ below 50D MA)
+            # Bear ETFs: long only when bearish + breakdown (e.g. QQQ below 50D MA)
             bear_etfs_cfg = config.get("universe", {}).get("bear_etfs", {})
-            bear_etf_symbols = bear_etfs_cfg.get("symbols") or []
+            bear_etf_all_raw = list(bear_etfs_cfg.get("symbols") or [])
+            bear_etf_universe_set = {str(s).upper() for s in bear_etf_all_raw}
+            bear_etf_symbols = list(bear_etf_all_raw)
             breakdown_cfg = bear_etfs_cfg.get("breakdown", {}) or {}
             ref_symbol = breakdown_cfg.get("reference_symbol") or "QQQ"
             breakdown_ma_period = int(breakdown_cfg.get("ma_period") or 50)
+            prefer_sqqq_qqq = bool(bear_etfs_cfg.get("prefer_sqqq_when_breakdown_reference_is_qqq", True))
+            if prefer_sqqq_qqq and str(ref_symbol).upper() == "QQQ":
+                sqqq_only = [s for s in bear_etf_symbols if str(s).upper() == "SQQQ"]
+                if sqqq_only:
+                    bear_etf_symbols = sqqq_only
+                elif verbose:
+                    print(dt.strftime("%H:%M ET"), "— bear ETFs: QQQ breakdown but SQQQ not in bear_etfs.symbols; using full list")
             breakdown_detected = False
             if bearish_regime and bear_etf_symbols and ref_symbol:
                 try:
@@ -321,13 +330,21 @@ def main() -> None:
                         print(dt.strftime("%H:%M ET"), "— breakdown check skip:", type(e).__name__, str(e)[:40])
 
             if bearish_regime and breakdown_detected and bear_etf_symbols:
-                # Long bear ETFs (SQQQ, SPXS, TZA) when regime is bearish and breakdown detected
+                # Inverse entries (often SQQQ-only when breakdown ref is QQQ); exposure counts all bear_etfs.symbols
                 max_bear_etf_positions = int(bear_etfs_cfg.get("max_positions") or 2)
                 bear_etf_stop_pct = float(bear_etfs_cfg.get("stop_pct") or 2.0)
                 max_bear_etf_pct = float(bear_etfs_cfg.get("max_exposure_pct_equity") or 10)
                 max_bear_etf_notional = account_equity * (max_bear_etf_pct / 100.0)
-                current_bear_etf_notional = sum(abs(float(p.get("market_value") or 0)) for p in positions if p.get("symbol") in bear_etf_symbols)
-                current_bear_etf = sum(1 for s in bear_etf_symbols if s in current_positions or s.upper() in tracked)
+                current_bear_etf_notional = sum(
+                    abs(float(p.get("market_value") or 0))
+                    for p in positions
+                    if str(p.get("symbol") or "").upper() in bear_etf_universe_set
+                )
+                tracked_upper = {str(k).upper() for k in tracked}
+                pos_bear_syms = {str(p.get("symbol") or "").upper() for p in positions}
+                current_bear_etf = len(
+                    {s for s in bear_etf_universe_set if s in pos_bear_syms or s in tracked_upper}
+                )
                 for symbol in bear_etf_symbols:
                     if current_bear_etf >= max_bear_etf_positions:
                         break
@@ -377,7 +394,34 @@ def main() -> None:
                             print("  %s: bear ETF skip —" % symbol, type(e).__name__, str(e)[:60])
                         continue
 
-            if not bearish_regime:
+            universe_cfg = config.get("universe", {})
+            bearish_allow_longs = bool(universe_cfg.get("bearish_allow_trend_long_entries", False))
+            bearish_max_norm = universe_cfg.get("bearish_max_normal_long_positions")
+            bearish_max_norm = int(bearish_max_norm) if bearish_max_norm is not None and str(bearish_max_norm).strip() != "" else None
+            bear_etf_set = bear_etf_universe_set
+
+            def _normal_long_position_count() -> int:
+                n = 0
+                for p in positions:
+                    sym = p.get("symbol", "")
+                    if not sym or str(sym).upper() in bear_etf_set:
+                        continue
+                    if int(float(p.get("qty") or 0)) > 0:
+                        n += 1
+                return n
+
+            run_trend_long_entries = (not bearish_regime) or bearish_allow_longs
+            if run_trend_long_entries and bearish_regime and bearish_max_norm is not None:
+                n_norm = _normal_long_position_count()
+                if n_norm >= bearish_max_norm:
+                    run_trend_long_entries = False
+                    if verbose:
+                        print(
+                            dt.strftime("%H:%M ET"),
+                            "— bearish: skip trend long entries (%d normal longs >= cap %d)" % (n_norm, bearish_max_norm),
+                        )
+
+            if run_trend_long_entries:
                 for symbol in symbols:
                     if symbol in current_positions:
                         if verbose:

@@ -21,7 +21,8 @@ The structure is inspired by [QuantConnect Lean](https://github.com/QuantConnect
 ### 1) Universe & Data
 - **Traded set** = `universe.symbols` \ `universe.paused_symbols` in **`config/default.yaml`**. As committed, **`universe.symbols`** is: **SPY, QQQ, IWM, XLF, XLK, XLE, GLD, AAPL, MSFT, NVDA, AMZN, META, GOOGL, AMD, TSLA, BABA, JD, PDD** (19 tickers). **`universe.paused_symbols`** is `[]` unless you add exclusions.
 - **Regime filter** (`universe.regime_min_pct_above_50d_ma`, default `0.30`): On each entry pass, the loop counts how many of those symbols have **close &gt; 50-day MA** on daily bars. If the fraction is **below** the threshold, the market is treated as **bearish** → **no** normal long entries; the bear-ETF path may still run.
-- **Inverse / bear ETFs** (`universe.bear_etfs`): Separate from `universe.symbols`. As committed: **`symbols: [SQQQ, SPXS]`** (no TZA), **`max_positions: 1`**, **`max_exposure_pct_equity: 20`**, **`breakdown.reference_symbol: QQQ`** with **`ma_period: 50`**. In a bearish regime, if QQQ is below that MA, the loop may open **at most one** inverse ETF long, with total inverse notional capped at **20% of equity** (see `run_alpaca_loop.py`).
+- **Inverse / bear ETFs** (`universe.bear_etfs`): Separate from `universe.symbols`. As committed: **`symbols: [SQQQ, SPXS]`**, **`max_positions: 1`**, **`max_exposure_pct_equity: 30`**, **`breakdown.reference_symbol: QQQ`**, **`ma_period: 50`**. When the breakdown reference is **QQQ**, **`prefer_sqqq_when_breakdown_reference_is_qqq: true`** (default) limits **new** inverse entries to **SQQQ** only (SPXS is not considered in that case). Exposure and position counts still include any **SPXS** already held. In a bearish regime, if QQQ is below that MA, the loop may open **at most one** inverse ETF long, with total inverse notional capped at **30% of equity**.
+- **Bearish + normal longs** (`universe`): By default **`bearish_allow_trend_long_entries: false`** — no new trend longs when the regime is bearish (unchanged). Set **`bearish_allow_trend_long_entries: true`** to keep scanning entries during bearish periods. If **`bearish_max_normal_long_positions`** is set (e.g. `4`), new trend longs are skipped while bearish once **non-inverse** long positions are **≥** that count.
 - **Market sessions**, **market quality** (spread, volume/ATR, volatility spike), and **trade filters** (macro blackout, earnings blackout, vol DNT, high-vol sizing): see `default.yaml` sections `market_sessions`, `market_quality`, `trade_filters`.
 
 ### Live vs paper (Alpaca loop + news)
@@ -55,7 +56,7 @@ Implemented by **`TrendFollowingStrategy`** in **`src/strategy.py`**.
 - **`entry_check_interval_minutes`**: 10 — when elapsed, runs **regime** (% of universe above 50D MA), optional **market_regime** scorer (size multiplier), **bear-ETF** breakdown path, then **long entries** per symbol with a **cheap prefilter** (already in position / open order / tracked, then **close &gt; fast &amp; slow MA**, spread, cash) before **`run_entry_gates`**. Optional **news-driven** entry uses **`entry_override`** only when news is enabled and not `--live`.
 
 ### 4) Position sizing (`position_sizing` in `default.yaml`)
-- As committed: **`risk_per_trade_pct` 0.5**, **`max_open_risk_pct` 3.0**, **`max_exposure_per_symbol_pct` / `max_exposure_per_sector_pct` 40**, optional **high-vol reduction** (e.g. half size when ATR% &gt; threshold).
+- As committed: **`risk_per_trade_pct` 0.25**, **`max_open_risk_pct` 3.0**, **`max_exposure_per_symbol_pct` 8**, **`max_position_dollar_cap` 2000**, **`max_exposure_per_sector_pct` 40**, optional **high-vol reduction** (e.g. half size when ATR% &gt; threshold).
 
 ### 5) Portfolio & drawdown (`portfolio_risk`)
 - As committed: **daily loss limit** −2%, **max drawdown** −10% with **safe mode**, **max_trades_per_day** 15, **max_trades_per_symbol_per_day** 3 (tune in YAML).
@@ -171,14 +172,144 @@ This runs the full entry gate sequence for a sample symbol (SPY) with synthetic 
 
 ## Configuration
 
-Edit `config/default.yaml` to:
+**Single file:** `config/default.yaml`. Loaded by `src/config_loader.py` (and CLI scripts). Override paths or env-specific files only if you extend the loader.
 
-- Set **`universe.symbols`**, **`paused_symbols`**, **`bear_etfs`**, and liquidity filters — then **update this README** if you change the default set materially.
-- Adjust **market_sessions**, **market_quality**, **`strategy`** (including **`player_focus`**, **`entry_mode`**, MA periods, exits), **`position_sizing`**, **`portfolio_risk`**, **`execution`**, **`compliance`**.
-- Set **position_sizing** (risk per trade, max open risk, symbol/sector caps).
-- Set **portfolio_risk** (daily loss limit, max drawdown, safe mode, trade frequency).
-- Set **execution** (limit vs market, spread gate, slippage limits).
-- Set **compliance** (PDT minimum equity, margin account flag).
+### Config reference (`config/default.yaml`)
+
+| Section | Purpose |
+|--------|---------|
+| **`universe`** | What to trade, regime & bear-ETF rules, liquidity gates |
+| **`news_sentiment`** | Optional NewsAPI + FinBERT (loop forces off on `--live`) |
+| **`market_sessions`** | Pre / regular / after-hours windows and `trade_allowed` |
+| **`market_quality`** | Spread gate, quote staleness, volume/ATR, vol-spike block, high-vol symbol list |
+| **`holidays`** | Optional holiday / half-day list (extend per year) |
+| **`trade_filters`** | Macro blackout, earnings blackout, volatility DNT |
+| **`strategy`** | Strategy type, player focus, trend-following params, exits |
+| **`position_sizing`** | Risk %, exposure caps, optional dollar cap, high-vol size reduction |
+| **`portfolio_risk`** | Daily loss, drawdown, safe mode, trade frequency caps |
+| **`market_regime`** | SPY/QQQ/VIXY/HYG/TLT score → size multipliers |
+| **`execution`** | Limit vs market, spread/slippage / strategy block |
+| **`broker`** | Alpaca paper/live, loop intervals, optional data feed / retry (commented) |
+| **`compliance`** | PDT, margin, best-execution note |
+
+#### `universe`
+
+| Key | Role |
+|-----|------|
+| **`symbols`** | List of tradeable tickers (minus `paused_symbols`) |
+| **`paused_symbols`** | Excluded from scan/trade |
+| **`regime_min_pct_above_50d_ma`** | Fraction of universe that must be above 50D MA to avoid “bearish” regime |
+| **`bear_etfs`** | `symbols`, `breakdown.reference_symbol`, `breakdown.ma_period`, `prefer_sqqq_when_breakdown_reference_is_qqq`, `max_positions`, `max_exposure_pct_equity`, `stop_pct` |
+| **`bearish_allow_trend_long_entries`** | If `true`, still run long entry scan when bearish |
+| **`bearish_max_normal_long_positions`** | Cap non-inverse longs when bearish (`null` = no cap) |
+| **`min_avg_dollar_volume_30d`** | Liquidity floor (USD) |
+| **`min_atr_multiple_for_volume`** | Volume vs ATR expectation filter |
+
+#### `news_sentiment`
+
+| Key | Role |
+|-----|------|
+| **`enabled`** | Master switch (default `false`) |
+| **`newsapi_key_env`** | Env var for API key |
+| **`headline_lookback_hours`**, **`max_headlines`**, **`cache_ttl_seconds`** | Fetch/cache |
+| **`finbert_model`** | Hugging Face model id |
+| **`positive_score_threshold`**, **`negative_score_threshold`** | Entry/exit sentiment gates |
+| **`volume_spike_min`**, **`volume_lookback_days`**, **`weak_trend_ma_period`** | Combined news + volume / trend rules |
+
+#### `market_sessions`
+
+Nested **`pre_market`**, **`regular`**, **`after_hours`**: each has **`start`**, **`end`** (ET `"HH:MM"`), **`trade_allowed`**.
+
+#### `market_quality`
+
+| Key | Role |
+|-----|------|
+| **`max_spread_pct`**, **`high_vol_max_spread_pct`** | Spread limits (core vs high-vol names) |
+| **`stale_quote_max_age_seconds`** | Reject stale quotes |
+| **`min_volume_atr_ratio`** | Volume vs ATR |
+| **`block_on_news_spike`**, **`news_volatility_spike_atr_pct`** | Block when ATR% spikes |
+| **`high_vol_symbols`** | Tickers using high-vol spread tier |
+
+#### `trade_filters`
+
+- **`macro_blackout`**: `enabled`, `blackout_dates`, `blackout_windows` (ET time windows).
+- **`earnings_blackout`**: `enabled`, `days_before`, `days_after`, **`earnings_dates`** (map symbol → list of `YYYY-MM-DD`).
+- **`volatility_do_not_trade`**: `enabled`, `max_atr_pct`, `max_spread_pct`, `high_vol_symbols`, `high_vol_max_spread_pct`.
+
+#### `strategy`
+
+| Key | Role |
+|-----|------|
+| **`type`** | `trend_following`, `mean_reversion`, `breakout` |
+| **`player_focus`** | `retail`, `neutral`, `institutional` |
+| **`institutional.min_volume_ratio_vs_avg`** | Volume vs 20d avg (institutional path) |
+| **`retail`** | `ma_fast`, `ma_slow`, `time_bars_exit` (overrides `strategy.exits.time_bars_exit` when retail is active — live loop uses **calendar days** for time exit) |
+| **`candlestick_filter`** | `enabled`, `patterns` (e.g. `bullish_engulfing`, `hammer`, `doji`) |
+| **`trend_following`** | `entry_mode` (`momentum` or `pullback`), `ma_fast` / `ma_slow`, `pullback_touch_ma_fast`, `pullback_tolerance_pct`, `volatility_filter_atr_period`, `max_atr_pct_for_entry` |
+| **`exits`** | `stop_loss_pct`, cooldown / re-entry flags (`cooldown_after_stop_minutes`, `require_new_breakout_after_stop`, `cooldown_after_profit_minutes`, `require_price_above_exit_after_profit`), `take_profit_pct`, `use_trailing_stop`, `trailing_stop_pct`, `partial_take_profit_pct`, `partial_exit_ratio`, `time_bars_exit`, **`kill_switch`** (`max_spread_pct`, `max_atr_pct`) |
+
+#### `position_sizing`
+
+| Key | Role |
+|-----|------|
+| **`risk_per_trade_pct`** | Account % at risk per trade (stop-based sizing) |
+| **`max_open_risk_pct`** | Cap on sum of open stop risks |
+| **`max_exposure_per_symbol_pct`** | Max position as % of equity |
+| **`max_position_dollar_cap`** | Hard USD cap per position (`null` = off); effective notional = **min(% cap, dollar cap)** |
+| **`max_exposure_per_sector_pct`** | Sector concentration cap |
+| **`high_vol_reduction`** | `enabled`, `atr_pct_threshold`, `size_multiplier` |
+
+#### `portfolio_risk`
+
+| Key | Role |
+|-----|------|
+| **`daily_loss_limit_pct`**, **`max_drawdown_pct`** | Loss / DD thresholds |
+| **`safe_mode_after_max_dd`** | Reduce/disable behavior after max DD (see `portfolio_risk.py`) |
+| **`recovery_criteria_pct`** | Drawdown level to resume after safe mode |
+| **`max_trades_per_day`**, **`max_trades_per_symbol_per_day`** | Frequency caps |
+
+#### `market_regime`
+
+| Key | Role |
+|-----|------|
+| **`enabled`** | Turn regime scoring on/off |
+| **`symbols`** | Map roles → tickers (`spy`, `qqq`, `vix`, `hyg`, `tlt` keys in YAML) |
+| **`ma_period_trend`**, **`ma_period_rising_falling`** | MA lengths for score |
+| **`vix_threshold`** | VIX proxy threshold (ticker is often `VIXY` in config) |
+| **`size_multipliers`** | `bullish`, `neutral`, `defensive` multipliers applied to sizing |
+
+#### `execution`
+
+| Key | Role |
+|-----|------|
+| **`prefer_limit_orders`**, **`limit_order_offset_ticks`** | Order type / price offset |
+| **`max_spread_pct_to_trade`** | Do not trade if spread too wide |
+| **`partial_fill_timeout_seconds`**, **`cancel_replace_on_partial`** | Partial-fill handling |
+| **`max_slippage_bps`**, **`block_strategy_if_slippage_bps_avg_exceeds`** | Slippage tracking / circuit breaker |
+
+#### `broker`
+
+| Key | Role |
+|-----|------|
+| **`firm`** | e.g. `alpaca` |
+| **`paper`** | `true` = paper API (default) |
+| **`run_until_close`** | Loop until session end |
+| **`exit_check_interval_minutes`**, **`entry_check_interval_minutes`** | Live loop cadence |
+| *(commented)* | `api_retry_times`, `api_retry_delay_sec`, `data_feed` (`iex` / `sip`) |
+
+#### `compliance`
+
+| Key | Role |
+|-----|------|
+| **`pdt_min_equity`**, **`pdt_enabled`** | Pattern day trader rules |
+| **`margin_account`** | Account type assumption |
+| **`day_trade_count_reset_calendar`** | e.g. `rolling_5_business_days` |
+| **`best_execution_note`** | Documentation only |
+
+### Editing tips
+
+- If you change the **default ticker set** or materially change behavior, **update this README** (or treat drift as a doc bug).
+- **`strategy.retail.time_bars_exit`** overrides **`strategy.exits.time_bars_exit`** for retail focus; the Alpaca loop interprets time exit as **days since entry**, not bar count.
 
 ## Algorithm API (Lean-style)
 

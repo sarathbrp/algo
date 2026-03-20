@@ -8,7 +8,7 @@ Retries on connection errors (RemoteDisconnected, ConnectionError) so the loop d
 """
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Callable, TypeVar
 
 import pandas as pd
@@ -17,7 +17,12 @@ T = TypeVar("T")
 
 try:
     from alpaca.trading.client import TradingClient
-    from alpaca.trading.requests import LimitOrderRequest, MarketOrderRequest, GetOrdersRequest
+    from alpaca.trading.requests import (
+        GetOrdersRequest,
+        GetPortfolioHistoryRequest,
+        LimitOrderRequest,
+        MarketOrderRequest,
+    )
     from alpaca.trading.enums import OrderSide, TimeInForce
     from alpaca.data.historical import StockHistoricalDataClient
     from alpaca.data.requests import StockBarsRequest, StockLatestQuoteRequest
@@ -119,6 +124,74 @@ class AlpacaBroker:
             acc = self._trading.get_account()
             return float(getattr(acc, "buying_power", 0) or getattr(acc, "cash", 0) or 0)
         return self._with_retry(_get)
+
+    def get_account_snapshot(self) -> dict[str, Any]:
+        """
+        Current equity, last_equity (prior regular session close), cash.
+        Session P&L (mark-to-market since prior close) ≈ equity - last_equity when last_equity is set.
+        """
+        def _get() -> dict[str, Any]:
+            acc = self._trading.get_account()
+
+            def fnum(x: Any) -> float | None:
+                if x is None or x == "":
+                    return None
+                try:
+                    return float(x)
+                except (TypeError, ValueError):
+                    return None
+
+            return {
+                "equity": fnum(getattr(acc, "equity", None)) or 0.0,
+                "last_equity": fnum(getattr(acc, "last_equity", None)),
+                "cash": fnum(getattr(acc, "cash", None)),
+            }
+
+        return self._with_retry(_get)
+
+    def get_portfolio_daily_pnl_for_date(self, d: date) -> dict[str, Any] | None:
+        """
+        Alpaca portfolio history (1D bars): profit_loss / profit_loss_pct / equity for calendar date d in US/Eastern.
+        Returns None if the API has no bar for that day (e.g. weekend) or on error.
+        """
+        try:
+            import pytz
+            from alpaca.trading.requests import GetPortfolioHistoryRequest
+
+            et = pytz.timezone("America/New_York")
+        except Exception:
+            return None
+
+        def _fetch() -> dict[str, Any] | None:
+            req = GetPortfolioHistoryRequest(period="6M", timeframe="1D", date_end=d)
+            ph = self._trading.get_portfolio_history(req)
+            ts_list = list(ph.timestamp or [])
+            pl_list = list(ph.profit_loss or [])
+            plp_list = list(ph.profit_loss_pct or [])
+            eq_list = list(ph.equity or [])
+            if not ts_list:
+                return None
+            target_idx: int | None = None
+            for i, ts in enumerate(ts_list):
+                dt_et = datetime.fromtimestamp(int(ts), tz=pytz.UTC).astimezone(et)
+                if dt_et.date() == d:
+                    target_idx = i
+            if target_idx is None:
+                return None
+            out: dict[str, Any] = {
+                "profit_loss": float(pl_list[target_idx]) if target_idx < len(pl_list) else 0.0,
+                "equity": float(eq_list[target_idx]) if target_idx < len(eq_list) else 0.0,
+            }
+            if target_idx < len(plp_list) and plp_list[target_idx] is not None:
+                out["profit_loss_pct"] = float(plp_list[target_idx])
+            else:
+                out["profit_loss_pct"] = None
+            return out
+
+        try:
+            return self._with_retry(_fetch)
+        except Exception:
+            return None
 
     def get_positions(self) -> list[dict[str, Any]]:
         def _get() -> list[dict[str, Any]]:

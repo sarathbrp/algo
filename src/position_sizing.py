@@ -3,7 +3,8 @@ Position sizing: risk per trade 0.25%–1%, max open risk cap, per-symbol/sector
 
 - Risk per trade: 0.25%–1.0% of account.
 - Max open risk: cap total at-risk (sum of stop distances) to e.g. 2%–5%.
-- Max exposure per symbol/sector to avoid hidden concentration.
+- Max notional per symbol: min(% of equity, optional max_position_dollar_cap).
+- Max exposure per sector to avoid hidden concentration.
 """
 from dataclasses import dataclass
 from typing import Any
@@ -24,6 +25,10 @@ class PositionSizer:
         self.risk_per_trade_pct = float(ps.get("risk_per_trade_pct", 0.5))
         self.max_open_risk_pct = float(ps.get("max_open_risk_pct", 3.0))
         self.max_exposure_per_symbol_pct = float(ps.get("max_exposure_per_symbol_pct", 20.0))
+        cap_raw = ps.get("max_position_dollar_cap")
+        self.max_position_dollar_cap: float | None = (
+            float(cap_raw) if cap_raw is not None and cap_raw != "" else None
+        )
         self.max_exposure_per_sector_pct = float(ps.get("max_exposure_per_sector_pct", 40.0))
         hvr = ps.get("high_vol_reduction", {})
         self.high_vol_enabled = bool(hvr.get("enabled", False))
@@ -76,8 +81,12 @@ class PositionSizer:
                 reject_reason="shares <= 0 (risk too small vs stop)",
             )
 
-        # Cap by max symbol exposure so we don't reject; trade at smaller size
-        max_notional = account_equity * (self.max_exposure_per_symbol_pct / 100.0)
+        # Cap by max symbol exposure (% equity) and optional USD cap; trade at smaller size
+        pct_cap = account_equity * (self.max_exposure_per_symbol_pct / 100.0)
+        if self.max_position_dollar_cap is not None and self.max_position_dollar_cap > 0:
+            max_notional = min(pct_cap, self.max_position_dollar_cap)
+        else:
+            max_notional = pct_cap
         notional_by_risk = shares_by_risk * price
         if notional_by_risk > max_notional:
             notional = max_notional
