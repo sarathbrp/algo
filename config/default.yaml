@@ -2,9 +2,11 @@
 # Override via environment or config file per environment.
 
 # ---------------------------------------------------------------------------
-# 1) Universe & Data (Lean-style: regime = detect only; bot trades expanded universe)
+# 1) Universe & Data
 # ---------------------------------------------------------------------------
-# Core live universe: index/sector ETFs + mega-cap tech + China ADRs (inverse ETFs are bear_etfs only).
+# Traded symbols = universe.symbols minus universe.paused_symbols.
+# Inverse ETFs (SQQQ/SPXS) are configured under universe.bear_etfs only (not counted in regime % unless listed in symbols).
+# Core universe below: index/sector ETFs + mega-cap tech + China ADRs.
 universe:
   symbols:
     # Index / breadth
@@ -238,20 +240,20 @@ trade_filters:
     high_vol_max_spread_pct: 1.2
 
 # ---------------------------------------------------------------------------
-# 2) Strategy (Trend-following as default)
+# 2) Strategy (trend-following; see README for behavior — must match code in src/strategy.py)
 # ---------------------------------------------------------------------------
 strategy:
   type: trend_following   # trend_following | mean_reversion | breakout
-  # Adopt style: retail = more signals (50/10 MA). neutral = strict (200/20 MA). institutional = volume filter.
-  player_focus: retail   # retail = shorter horizon, more entries; neutral = fewer, longer-term
+  # player_focus retail: MAs from strategy.retail + shorter time exit. institutional: adds volume filter on entry.
+  player_focus: retail   # retail | neutral | institutional
   # Institutional: only trade when volume >= N x 20d avg (proxy for institutional activity)
   institutional:
     min_volume_ratio_vs_avg: 1.2   # e.g. 1.2 = 20% above average volume
-  # Retail: shorter lookbacks and time exit (momentum / shorter horizon)
+  # Retail: overrides MA periods; time_bars_exit here overrides strategy.exits.time_bars_exit in code (see strategy.py).
   retail:
     ma_fast: 10
     ma_slow: 50
-    time_bars_exit: 10
+    time_bars_exit: 10   # live loop: compared to calendar days since entry (positions_tracked), not bar count
   # Candlestick filter: only enter when one of these patterns appears (uses same OHLC)
   candlestick_filter:
     enabled: false

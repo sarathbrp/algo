@@ -67,9 +67,11 @@ class PlayerFocus:
 
 class TrendFollowingStrategy:
     """
-    Price above slow MA + pullback to fast MA + volatility filter.
-    Exits defined before entries: stop, optional target, time, kill-switch.
-    Supports player_focus: institutional (volume filter), retail (faster MAs), neutral.
+    Trend-following entries from config strategy.trend_following + strategy.retail (when player_focus=retail).
+    Default yaml: retail + entry_mode=momentum → close > slow MA and > fast MA (e.g. 50/10), ATR% cap, optional candlestick filter.
+    entry_mode=pullback → close > slow MA and near fast MA within tolerance.
+    Exits: stop, partial + trailing, time, kill-switch (see strategy.exits); retail uses retail.time_bars_exit for time exit.
+    Live loop passes "bars_held" as calendar days since entry — align time_bars_exit with that semantics for Alpaca loop.
     """
 
     def __init__(self, config: dict[str, Any]):

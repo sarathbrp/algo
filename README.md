@@ -4,6 +4,10 @@ A rule-based algorithmic trading application that enforces **universe & data**, 
 
 The structure is inspired by [QuantConnect Lean](https://github.com/QuantConnect/Lean): **Algorithm** (with `Initialize` / `OnEndOfDay`), **Engine** (backtest/live), **Data** (CSV or Alpaca), and a **CLI** (`lean backtest`, `lean live`).
 
+### Source of truth (docs vs config)
+
+**Committed `config/default.yaml` and `src/*.py` are authoritative.** This README is written to match them; if you fork and change YAML, update the README (or treat any mismatch as a documentation bug). When reading logs, infer behavior from **`TrendFollowingStrategy`** (`src/strategy.py`) and **`run_alpaca_loop.py`**, not from generic “200-day trend” language unless your config actually uses those periods.
+
 ## Priority order (implementation order)
 
 1. **Open-order lock** — Before placing a new order for a symbol, skip if that symbol already has an open (pending) order. *(run_alpaca_loop + broker.get_open_orders)*
@@ -15,41 +19,51 @@ The structure is inspired by [QuantConnect Lean](https://github.com/QuantConnect
 ## Rules Implemented
 
 ### 1) Universe & Data
-- **Default live universe** (`config/default.yaml` → `universe.symbols`): **SPY, QQQ, IWM**; **XLF, XLK, XLE, GLD**; **AAPL, MSFT, NVDA, AMZN, META, GOOGL, AMD, TSLA**; **BABA, JD, PDD**. Use `universe.paused_symbols` to exclude names without editing the main list.
-- **Bearish regime / inverse ETFs**: When &lt;30% of the universe is above its 50D MA, long trend entries are skipped. If **QQQ** is below its 50D MA (**breakdown**), the loop may **long** inverse ETFs **SQQQ** and **SPXS** only (**TZA** removed). Settings: `universe.bear_etfs` — **`max_positions: 1`** (only one inverse ETF at a time), **`max_exposure_pct_equity: 20`** (cap inverse ETF notional at 20% of equity).
-- **Market sessions**: Pre-market (no trade), regular hours (trade), after-hours (no trade); holidays supported.
-- **Market quality gate**: Max spread %, min volume/ATR ratio, optional block on volatility spike (ATR%).
-- **Trade filters** (optional): **Macro-event blackout**; **earnings blackout** per symbol; **volatility/spread do-not-trade**; **position sizing reduction** in high-vol regimes.
+- **Traded set** = `universe.symbols` \ `universe.paused_symbols` in **`config/default.yaml`**. As committed, **`universe.symbols`** is: **SPY, QQQ, IWM, XLF, XLK, XLE, GLD, AAPL, MSFT, NVDA, AMZN, META, GOOGL, AMD, TSLA, BABA, JD, PDD** (19 tickers). **`universe.paused_symbols`** is `[]` unless you add exclusions.
+- **Regime filter** (`universe.regime_min_pct_above_50d_ma`, default `0.30`): On each entry pass, the loop counts how many of those symbols have **close &gt; 50-day MA** on daily bars. If the fraction is **below** the threshold, the market is treated as **bearish** → **no** normal long entries; the bear-ETF path may still run.
+- **Inverse / bear ETFs** (`universe.bear_etfs`): Separate from `universe.symbols`. As committed: **`symbols: [SQQQ, SPXS]`** (no TZA), **`max_positions: 1`**, **`max_exposure_pct_equity: 20`**, **`breakdown.reference_symbol: QQQ`** with **`ma_period: 50`**. In a bearish regime, if QQQ is below that MA, the loop may open **at most one** inverse ETF long, with total inverse notional capped at **20% of equity** (see `run_alpaca_loop.py`).
+- **Market sessions**, **market quality** (spread, volume/ATR, volatility spike), and **trade filters** (macro blackout, earnings blackout, vol DNT, high-vol sizing): see `default.yaml` sections `market_sessions`, `market_quality`, `trade_filters`.
 
-### News + FinBERT (optional — off for live)
-- **Live trading**: `scripts/run_alpaca_loop.py` with **`--live`** (or `python lean live --live`) **forces** `news_sentiment.enabled` off so NewsAPI/FinBERT **do not** run on a real-money session.
-- **Paper / research**: You may set `news_sentiment.enabled: true` in `config/default.yaml` when **not** using `--live`. Pipeline: [NewsAPI](https://newsapi.org/) → **FinBERT** → rules in `run_alpaca_loop` (buy: positive sentiment + volume spike; sell: negative + weak trend vs MA).
-- **Setup** (paper only): `pip install -r requirements-news.txt`, `NEWSAPI_KEY`, enable in config.
+### Live vs paper (Alpaca loop + news)
+- **`broker.paper`** in YAML defaults to **`true`**. CLI **`--live`** sets paper to **`false`** and **`--paper`** forces paper.
+- **`scripts/run_alpaca_loop.py`**: With **`--live`**, **`news_sentiment.enabled` is forced to `false`** in memory (NewsAPI/FinBERT off for real-money runs). On **paper**, news follows YAML (`news_sentiment.enabled`, default **`false`**).
+- **`lean live`** delegates to `run_alpaca_loop.py` with **`--paper`** (default) or **`--live`**.
 
-### 2) Entry/Exit (Mechanical)
-- **Default strategy**: Trend-following — price above 200D MA, pullback to 20D MA, volatility filter (max ATR%).
-- **Exits defined before entries**:  
-  - Stop-loss (hard)  
-  - Take-profit (optional)  
-  - Time-based (e.g. close after N bars)  
-  - Kill-switch (spread or ATR multiple explodes)
+### News + FinBERT (optional)
+- **Off by default** (`news_sentiment.enabled: false`). When enabled **and not** using `--live`, the loop can use NewsAPI + FinBERT (see `src/news_sentiment/`, `requirements-news.txt`).
 
-### 3) Position Sizing
-- **Risk per trade**: 0.25%–1% of account (configurable).
-- **Max open risk**: Cap total at-risk (sum of stop distances) to 2%–5%.
-- **Exposure limits**: Max % per symbol and per sector.
+### 2) Strategy & exits (mechanical — matches `strategy` in `default.yaml`)
 
-### 4) Portfolio & Drawdown
-- **Daily loss limit**: e.g. -1% to -3% → stop trading for the day.
-- **Max drawdown**: e.g. -10% → safe mode (paper only) until recovery to a better level.
-- **Trade frequency**: Max trades per day and per symbol per day.
+Implemented by **`TrendFollowingStrategy`** in **`src/strategy.py`**.
 
-### 5) Execution
-- **Limit orders preferred** in liquid names; spread gate (don’t trade if spread too wide).
-- **Partial fills**: Optional cancel/replace logic and timeout.
-- **Slippage**: Track expected vs actual fill; block strategy if average slippage exceeds threshold.
+**Entry (as committed)**  
+- **`strategy.type`**: `trend_following`  
+- **`strategy.player_focus`**: **`retail`** → moving averages are taken from **`strategy.retail`**: **`ma_fast: 10`**, **`ma_slow: 50`** (these override the neutral defaults in code; they also match **`strategy.trend_following.ma_fast` / `ma_slow`** in the file).  
+- **`strategy.trend_following.entry_mode`**: **`momentum`** → long only if **close &gt; slow MA** and **close &gt; fast MA**, plus **ATR% ≤ `max_atr_pct_for_entry`** (4.0 in default yaml), spread/ATR kill-switch at entry, and optional **candlestick** / **institutional volume** filters if enabled.  
+- If **`entry_mode`** were **`pullback`**, the logic would require price **near** the fast MA within **`pullback_tolerance_pct`** instead of strictly above both.
 
-### 6) Compliance
+**Exits (as committed, `strategy.exits`)**  
+- **Stop-loss** `stop_loss_pct` (1.5%).  
+- **Partial take-profit** at **`partial_take_profit_pct`** (3.0%) for **`partial_exit_ratio`** of the position (0.5).  
+- **Trailing stop** on the remainder **`trailing_stop_pct`** (3.0%) when **`use_trailing_stop`** is true.  
+- **Time exit**: `strategy.exits.time_bars_exit` is **25** in YAML, but with **`player_focus: retail`** the code uses **`strategy.retail.time_bars_exit` (10)** for the strategy object.  
+- **Alpaca live loop caveat**: `run_alpaca_loop` passes **`bars_held`** from **`position_tracker.bars_held`**, which is **calendar days since entry**, not “number of daily bars”. Treat **`time_bars_exit`** as **days held** in live trading unless you change the tracker.  
+- **Kill-switch** on wide spread or high **ATR%**; **cooldowns** and optional **re-entry rules** after stop or profit (see YAML `cooldown_*`, `require_*`).
+
+### 3) Live loop (`scripts/run_alpaca_loop.py` + `broker` section)
+- **`exit_check_interval_minutes`**: 5 — sleep between iterations; each pass refreshes account/positions, runs **exit** logic on tracked positions (quotes, daily bars for ATR, optional news-based exit if enabled).
+- **`entry_check_interval_minutes`**: 10 — when elapsed, runs **regime** (% of universe above 50D MA), optional **market_regime** scorer (size multiplier), **bear-ETF** breakdown path, then **long entries** per symbol with a **cheap prefilter** (already in position / open order / tracked, then **close &gt; fast &amp; slow MA**, spread, cash) before **`run_entry_gates`**. Optional **news-driven** entry uses **`entry_override`** only when news is enabled and not `--live`.
+
+### 4) Position sizing (`position_sizing` in `default.yaml`)
+- As committed: **`risk_per_trade_pct` 0.5**, **`max_open_risk_pct` 3.0**, **`max_exposure_per_symbol_pct` / `max_exposure_per_sector_pct` 40**, optional **high-vol reduction** (e.g. half size when ATR% &gt; threshold).
+
+### 5) Portfolio & drawdown (`portfolio_risk`)
+- As committed: **daily loss limit** −2%, **max drawdown** −10% with **safe mode**, **max_trades_per_day** 15, **max_trades_per_symbol_per_day** 3 (tune in YAML).
+
+### 6) Execution (`execution` + Alpaca)
+- **Limit vs market**, spread gate, slippage tracking / strategy block — see `default.yaml` **`execution`**.
+
+### 7) Compliance
 - **PDT**: Pattern Day Trader rules — $25,000 minimum equity and day-trade limit when below (current framework; may change per FINRA).
 - **Best execution**: Note in config; app enforces limits only; broker retains best execution duty.
 
@@ -159,9 +173,8 @@ This runs the full entry gate sequence for a sample symbol (SPY) with synthetic 
 
 Edit `config/default.yaml` to:
 
-- Set **universe** symbols (default: SPY/QQQ/IWM, sector ETFs, mega-cap tech, China ADRs), **paused_symbols**, **bear_etfs** (SQQQ/SPXS, max 1 position, 20% equity cap), and liquidity filters.
-- Adjust **market_sessions** (pre-market, regular, after-hours) and **market_quality** (spread %, volume/ATR, news spike).
-- Tune **strategy** (e.g. MA periods, stop/target, time exit, kill-switch).
+- Set **`universe.symbols`**, **`paused_symbols`**, **`bear_etfs`**, and liquidity filters — then **update this README** if you change the default set materially.
+- Adjust **market_sessions**, **market_quality**, **`strategy`** (including **`player_focus`**, **`entry_mode`**, MA periods, exits), **`position_sizing`**, **`portfolio_risk`**, **`execution`**, **`compliance`**.
 - Set **position_sizing** (risk per trade, max open risk, symbol/sector caps).
 - Set **portfolio_risk** (daily loss limit, max drawdown, safe mode, trade frequency).
 - Set **execution** (limit vs market, spread gate, slippage limits).

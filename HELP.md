@@ -70,11 +70,11 @@ Mechanical **when to buy** and **when to sell** for the trend-following strategy
 
 ### `TrendFollowingStrategy(config)`
 
-- **What it does:** Implements the default strategy: price above slow MA, pullback to fast MA, with a volatility (ATR) filter. Exits are defined before entries (stop, target, time, kill-switch). Supports **player_focus** (institutional/retail/neutral) and optional **candlestick filter**: only enter when a pattern (e.g. bullish_engulfing, hammer, doji) appears on the last bar — see `src/candlestick.py` and config `strategy.candlestick_filter`.
+- **What it does:** Trend-following from `config.strategy`. With **default.yaml** as committed: **`player_focus: retail`**, **`entry_mode: momentum`**, **10/50 MAs** — long when close **>** slow MA and **>** fast MA, ATR% cap, entry kill-switch on spread/ATR. With **`entry_mode: pullback`**, requires price near fast MA within tolerance instead. **`player_focus: institutional`** adds a min volume vs 20d average filter. Exits: stop, partial + optional trailing, time, kill-switch; **retail** uses **`strategy.retail.time_bars_exit`** for the time exit (overrides **`strategy.exits.time_bars_exit`** in code). Optional **candlestick_filter** — see `src/candlestick.py`.
 - **Methods:**
   - **`atr_pct(df)`** — Returns ATR as a percentage of close (e.g. for “ATR%”).
-  - **`generate_entry(symbol, df, spread_pct=None, atr_multiple_now=None)`** — Decides if there is a **buy** signal: uptrend + pullback + volatility filter. Returns an `EntrySignal` (with stop_pct, take_profit_pct, time_bars_exit) or `None` if no signal.
-  - **`check_exit(symbol, entry_price, current_price, bars_held, spread_pct=None, atr_multiple=None)`** — Decides if you should **sell**: returns an `ExitSignal` for stop-loss, take-profit, time exit, or kill-switch (spread/volatility blow-out), or `None` if no exit.
+  - **`generate_entry(symbol, df, spread_pct=None, atr_pct_now=None)`** — **Buy** signal or `None` per config (momentum vs pullback, vol filter, etc.).
+  - **`check_exit(...)`** — **Sell** partial/full for stop, partial take-profit, trailing, time, kill-switch, or `None`.
 
 ### Data classes
 
@@ -189,7 +189,7 @@ Computes **how many shares** to trade and enforces risk and exposure limits.
 - **Methods:**
   - **`update_equity(equity, dt=None)`** — Updates equity in portfolio risk and PDT state; used at the start of each run or when you get new account data.
   - **`is_trading_allowed(dt)`** — Convenience: returns whether the market session allows trading at `dt`.
-  - **`run_entry_gates(symbol, dt, account_equity, current_positions, sector_exposure_pct, spread_pct, volume_atr_ratio=None, atr_multiple=None, ohlcv_df=None, symbol_sector=None)`** — Runs the full sequence: calendar → macro blackout → universe → earnings blackout → market quality → execution spread → volatility DNT → slippage block → portfolio risk → PDT → strategy entry → position sizing (with high-vol reduction) → max open risk check → build order. Returns a **`TradeDecision`**: `allowed` (bool), `reason` (str), and if allowed: `order_request`, `entry_signal`, `position_sizing`.
+  - **`run_entry_gates(..., entry_override=None)`** — Full gate sequence: calendar → macro blackout → universe → earnings blackout → market quality → execution spread → volatility DNT → slippage block → portfolio risk → PDT → cooldown/re-entry rules → strategy **`generate_entry`** (or **`entry_override`** if passed) → sizing → build order. Returns **`TradeDecision`**.
   - **`check_exit(symbol, entry_price, current_price, bars_held, spread_pct=None, atr_multiple=None)`** — Delegates to the strategy’s `check_exit`; returns an `ExitSignal` or `None`.
 
 ### `TradeDecision`
@@ -248,7 +248,7 @@ Talks to **Alpaca** for account, data, and orders.
 8. Slippage block (strategy blocked?)
 9. Portfolio risk (daily loss, drawdown, trade count)
 10. PDT (day-trade limit)
-11. Strategy entry signal (trend + pullback + vol filter)
+11. Strategy entry signal (`generate_entry` / optional `entry_override`: momentum or pullback + vol filter per config)
 12. Position sizing (with high-vol reduction) and max open risk
 13. Build order (limit/market)
 
