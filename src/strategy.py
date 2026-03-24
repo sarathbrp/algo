@@ -118,10 +118,25 @@ class TrendFollowingStrategy:
         self.kill_switch_max_atr_pct = float(
             ks.get("max_atr_pct") or ks.get("max_atr_multiple", 3.0)
         )
+        # 0 = disabled. Blocks partial, trail, time, kill-switch (not stop-loss). Live: wall-clock minutes.
+        self.min_hold_minutes = float(exits.get("min_hold_minutes", 0) or 0)
 
         cf = strat.get("candlestick_filter", {})
         self.candlestick_enabled = bool(cf.get("enabled", False))
         self.candlestick_patterns = list(cf.get("patterns", []) or [])
+
+    def _effective_minutes_held(self, minutes_held: float | None, bars_held: int) -> float:
+        """Live: use wall-clock minutes when provided. Daily backtest: approximate bars × 1440."""
+        if minutes_held is not None:
+            return float(minutes_held)
+        if self.min_hold_minutes <= 0:
+            return float("inf")
+        return float(bars_held) * 1440.0
+
+    def _within_min_hold(self, minutes_held: float | None, bars_held: int) -> bool:
+        if self.min_hold_minutes <= 0:
+            return False
+        return self._effective_minutes_held(minutes_held, bars_held) < self.min_hold_minutes
 
     def atr_pct(self, df: pd.DataFrame) -> pd.Series:
         if df.empty or len(df) < self.atr_period:
@@ -206,13 +221,18 @@ class TrendFollowingStrategy:
         partial_taken: bool = False,
         trail_high: float | None = None,
         current_qty: int = 0,
+        minutes_held: float | None = None,
     ) -> ExitSignal | None:
         """Check for stop, partial at 2%, trailing stop on remainder, time, or kill-switch.
-        atr_pct must be ATR% = (ATR/close)*100."""
+        atr_pct must be ATR% = (ATR/close)*100.
+        min_hold_minutes: stop-loss always allowed; other exits deferred until hold elapsed (live: wall clock)."""
         ret_pct = (current_price - entry_price) / entry_price * 100
 
         if ret_pct <= -self.stop_loss_pct:
             return ExitSignal(symbol=symbol, reason=ExitReason.STOP_LOSS, metadata={"ret_pct": ret_pct})
+        if self._within_min_hold(minutes_held, bars_held):
+            return None
+
         if bars_held >= self.time_bars_exit:
             return ExitSignal(symbol=symbol, reason=ExitReason.TIME_BARS, metadata={"bars_held": bars_held})
         if spread_pct is not None and spread_pct > self.kill_switch_max_spread_pct:
@@ -250,11 +270,15 @@ class TrendFollowingStrategy:
         time_bars_exit: int,
         spread_pct: float | None = None,
         atr_pct: float | None = None,
+        *,
+        minutes_held: float | None = None,
     ) -> ExitSignal | None:
         """Exit rules for short: stop when price rises, take profit when price falls. atr_pct for kill-switch."""
         ret_pct = (entry_price - current_price) / entry_price * 100  # profit when price falls
         if ret_pct <= -stop_pct:
             return ExitSignal(symbol=symbol, reason=ExitReason.STOP_LOSS, metadata={"ret_pct": ret_pct})
+        if self._within_min_hold(minutes_held, bars_held):
+            return None
         if bars_held >= time_bars_exit:
             return ExitSignal(symbol=symbol, reason=ExitReason.TIME_BARS, metadata={"bars_held": bars_held})
         if spread_pct is not None and spread_pct > self.kill_switch_max_spread_pct:

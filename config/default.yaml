@@ -274,6 +274,9 @@ strategy:
     max_atr_pct_for_entry: 4.0   # allow noisier names for proof-of-life
   exits:
     stop_loss_pct: 1.5
+    # Wall-clock minimum before partial, trail, time exit, kill-switch, or news-based exit (live).
+    # Stop-loss always allowed. Daily backtest uses ~bars_held × 1440 min when wall clock not passed.
+    min_hold_minutes: 1440   # 1 day
     cooldown_after_stop_minutes: 30 # avoid immediate re-entry after stop loss
     require_new_breakout_after_stop: true  # re-entry only after price breaks above stopped level
     cooldown_after_profit_minutes: 10  # avoid immediate re-entry after profit booking
@@ -295,9 +298,9 @@ position_sizing:
   risk_per_trade_pct: 0.25     # 0.25 - 1.0 of equity at risk per trade
   max_open_risk_pct: 3.0       # sum of stop distances cap (2-5%)
   # Per position: min(% of equity, dollar cap) — alias intent: max_position_pct_equity / max_position_dollar_cap
-  max_exposure_per_symbol_pct: 8.0    # max % of account in any single position
+  max_exposure_per_symbol_pct: 10.0   # max % of account in any single position (~10–12 typical)
   max_position_dollar_cap: 2000       # hard USD cap per new position (null = no cap)
-  max_exposure_per_sector_pct: 40.0
+  max_exposure_per_sector_pct: 25.0
   # Position sizing reduction during high volatility regimes
   high_vol_reduction:
     enabled: true

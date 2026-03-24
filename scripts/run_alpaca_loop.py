@@ -22,7 +22,14 @@ from src.trading_engine import TradingEngine
 from src.brokers.alpaca_client import AlpacaBroker
 from src.strategy import _atr
 from src.universe import MarketCalendar, SessionType
-from src.position_tracker import load as load_tracked, add as add_tracked, remove as remove_tracked, update as update_tracked, bars_held
+from src.position_tracker import (
+    load as load_tracked,
+    add as add_tracked,
+    remove as remove_tracked,
+    update as update_tracked,
+    bars_held,
+    minutes_held as holding_minutes,
+)
 from src.strategy import ExitReason, EntrySignal
 from src.market_regime import MarketRegimeScorer
 from src.news_sentiment import NewsSentimentPipeline, NewsRuleEngine, volume_spike_ratio
@@ -154,6 +161,7 @@ def main() -> None:
                     continue
                 entry_time_iso = pos.get("entry_time", "")
                 bars = bars_held(entry_time_iso, dt)
+                hold_mins = holding_minutes(entry_time_iso, dt) if entry_time_iso else None
                 partial_taken = bool(pos.get("partial_taken", False))
                 trail_high_val = pos.get("trail_high")
                 trail_high_f = float(trail_high_val) if trail_high_val is not None else None
@@ -173,27 +181,47 @@ def main() -> None:
                         if not df_news.empty and len(df_news) >= news_rules.weak_trend_ma_period:
                             sent = news_pipeline.sentiment_for_symbol(symbol)
                             if news_rules.should_sell(sent, df_news):
-                                sell_order = engine.execution.build_order(symbol, "sell", qty, quote.mid, quote.spread_pct)
-                                if sell_order:
-                                    broker.submit_order(sell_order)
-                                    print(
-                                        dt.strftime("%H:%M ET"),
-                                        symbol,
-                                        "SELL",
-                                        qty,
-                                        "shares —",
-                                        ExitReason.NEWS_SENTIMENT.value,
-                                        "(sent=%.2f)" % sent,
-                                    )
-                                remove_tracked(tracker_path, symbol)
-                                continue
+                                mh = float(getattr(engine.strategy, "min_hold_minutes", 0) or 0)
+                                skip_news_exit = mh > 0 and hold_mins is not None and hold_mins < mh
+                                if skip_news_exit:
+                                    if verbose:
+                                        print(
+                                            dt.strftime("%H:%M ET"),
+                                            symbol,
+                                            "news exit skipped — min_hold",
+                                            f"({hold_mins:.0f}m < {mh:.0f}m)",
+                                        )
+                                else:
+                                    sell_order = engine.execution.build_order(symbol, "sell", qty, quote.mid, quote.spread_pct)
+                                    if sell_order:
+                                        broker.submit_order(sell_order)
+                                        print(
+                                            dt.strftime("%H:%M ET"),
+                                            symbol,
+                                            "SELL",
+                                            qty,
+                                            "shares —",
+                                            ExitReason.NEWS_SENTIMENT.value,
+                                            "(sent=%.2f)" % sent,
+                                        )
+                                    remove_tracked(tracker_path, symbol)
+                                    continue
                     except Exception as e:
                         if verbose:
                             print(dt.strftime("%H:%M ET"), symbol, "news exit skip —", type(e).__name__, str(e)[:50])
                 # Legacy short: cover only (no new shorts opened)
                 if side == "short":
                     exit_signal = engine.strategy.check_exit_short(
-                        symbol, entry_price, quote.mid, bars, 1.5, 2.0, 10, quote.spread_pct, atr_pct_exit
+                        symbol,
+                        entry_price,
+                        quote.mid,
+                        bars,
+                        1.5,
+                        2.0,
+                        10,
+                        quote.spread_pct,
+                        atr_pct_exit,
+                        minutes_held=hold_mins,
                     )
                     if exit_signal:
                         cover_order = engine.execution.build_order(symbol, "buy", qty, quote.mid, quote.spread_pct)
@@ -216,6 +244,7 @@ def main() -> None:
                     partial_taken=partial_taken,
                     trail_high=trail_high_f,
                     current_qty=qty,
+                    minutes_held=hold_mins,
                 )
                 if exit_signal:
                     if exit_signal.reason == ExitReason.PARTIAL_TAKE_PROFIT:
