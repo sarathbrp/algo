@@ -100,7 +100,7 @@ class TrendFollowingAlgorithm(QCAlgorithm):
             if symbol in context.portfolio.positions():
                 continue
             df_sym = data_df.get(symbol)
-            if df_sym is None or len(df_sym) < self._strategy.ma_slow:
+            if df_sym is None or len(df_sym) < self._strategy.min_history_bars_for_entry(symbol):
                 continue
             if len(df_sym) == 0 or pd.Timestamp(df_sym.index[-1]).date() != dt.date():
                 continue
