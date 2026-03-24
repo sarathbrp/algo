@@ -365,8 +365,37 @@ def main() -> None:
                     if verbose:
                         print(dt.strftime("%H:%M ET"), "— breakdown check skip:", type(e).__name__, str(e)[:40])
 
-            if bearish_regime and breakdown_detected and bear_etf_symbols:
-                # Inverse entries (often SQQQ-only when breakdown ref is QQQ); exposure counts all bear_etfs.symbols
+            # SQQQ entry signal: QQQ close < QQQ 50D MA (always QQQ/50 for SQQQ; independent of breakdown.reference_symbol)
+            qqq_below_ma50 = False
+            qqq_price: float | None = None
+            qqq_ma50: float | None = None
+            if bearish_regime:
+                try:
+                    if (
+                        str(ref_symbol).upper() == "QQQ"
+                        and breakdown_ma_period == 50
+                        and ref_close is not None
+                        and ref_ma is not None
+                    ):
+                        qqq_price, qqq_ma50 = ref_close, ref_ma
+                    else:
+                        qb = broker.get_bars("QQQ", timeframe="1Day", limit=60)
+                        if not qb.empty and len(qb) >= 50:
+                            qqq_price = float(qb["close"].iloc[-1])
+                            qqq_ma50 = float(qb["close"].rolling(50).mean().iloc[-1])
+                    if qqq_price is not None and qqq_ma50 is not None:
+                        qqq_below_ma50 = qqq_price < qqq_ma50
+                        if qqq_below_ma50 and verbose:
+                            print(
+                                dt.strftime("%H:%M ET"),
+                                "— SQQQ gate: QQQ %.2f < 50D MA %.2f" % (qqq_price, qqq_ma50),
+                            )
+                except Exception as e:
+                    if verbose:
+                        print(dt.strftime("%H:%M ET"), "— QQQ MA50 check skip:", type(e).__name__, str(e)[:40])
+
+            if bearish_regime and bear_etf_symbols:
+                # Inverse entries: SQQQ when QQQ < MA50; other bear symbols use configured breakdown ref/MA
                 max_bear_etf_positions = int(bear_etfs_cfg.get("max_positions") or 2)
                 bear_etf_stop_pct = float(bear_etfs_cfg.get("stop_pct") or 2.0)
                 max_bear_etf_pct = float(bear_etfs_cfg.get("max_exposure_pct_equity") or 10)
@@ -384,6 +413,12 @@ def main() -> None:
                 for symbol in bear_etf_symbols:
                     if current_bear_etf >= max_bear_etf_positions:
                         break
+                    sym_u = str(symbol).upper()
+                    if sym_u == "SQQQ":
+                        if not qqq_below_ma50:
+                            continue
+                    elif not breakdown_detected:
+                        continue
                     if symbol in current_positions or symbol.upper() in open_order_symbols or symbol.upper() in tracked:
                         continue
                     try:
@@ -425,22 +460,23 @@ def main() -> None:
                         add_tracked(tracker_path, symbol, sizing.shares, close, bear_etf_stop_pct, side="long")
                         current_bear_etf += 1
                         current_positions[symbol] = {"notional": sizing.notional, "stop_pct": bear_etf_stop_pct}
-                        print(dt.strftime("%H:%M ET"), symbol, "BUY (bear ETF, breakdown)", sizing.shares, "shares")
+                        label = "QQQ < MA50" if sym_u == "SQQQ" else "breakdown"
+                        print(dt.strftime("%H:%M ET"), symbol, "BUY (bear ETF, %s)" % label, sizing.shares, "shares")
                     except Exception as e:
                         if verbose:
                             print("  %s: bear ETF skip —" % symbol, type(e).__name__, str(e)[:60])
                         continue
 
-                # SQQQ: optional small add when already long, reference is well below MA, room under inverse cap
+                # SQQQ: optional small add when already long, QQQ well below 50D MA, room under inverse cap
                 sqqq_add_cfg = bear_etfs_cfg.get("sqqq_add_on_strong_trend") or {}
                 if (
                     bool(sqqq_add_cfg.get("enabled", False))
                     and "SQQQ" in bear_etf_universe_set
-                    and ref_close is not None
-                    and ref_ma is not None
-                    and ref_ma > 0
+                    and qqq_price is not None
+                    and qqq_ma50 is not None
+                    and qqq_ma50 > 0
                 ):
-                    dist_pct = (ref_ma - ref_close) / ref_ma * 100.0
+                    dist_pct = (qqq_ma50 - qqq_price) / qqq_ma50 * 100.0
                     min_dist = float(sqqq_add_cfg.get("reference_ma_distance_pct_min", 1.5))
                     size_mult = float(sqqq_add_cfg.get("size_multiplier", 0.35))
                     trend_strong = dist_pct >= min_dist
@@ -567,21 +603,26 @@ def main() -> None:
                         continue
                     try:
                         df = broker.get_bars(symbol, timeframe="1Day", limit=220)
-                        if df.empty or len(df) < max(200, ma_slow_period):
+                        min_hist = engine.strategy.min_history_bars_for_entry(symbol)
+                        need = min_hist if str(symbol).upper() == "SQQQ" else max(200, ma_slow_period)
+                        if df.empty or len(df) < need:
                             if verbose:
-                                print("  %s: skip — not_enough_bars (got %d)" % (symbol, len(df) if not df.empty else 0))
+                                print("  %s: skip — not_enough_bars (got %d, need %d)" % (symbol, len(df) if not df.empty else 0, need))
                             continue
                         close = float(df["close"].iloc[-1])
                         # Trend prefilter: above MAs OR (news sentiment + volume spike) when enabled
                         trend_long_ok = True
-                        if len(df) >= ma_fast_period:
-                            ma_fast = float(df["close"].rolling(ma_fast_period).mean().iloc[-1])
-                            if close <= ma_fast:
-                                trend_long_ok = False
-                        if len(df) >= ma_slow_period:
-                            ma_slow = float(df["close"].rolling(ma_slow_period).mean().iloc[-1])
-                            if close <= ma_slow:
-                                trend_long_ok = False
+                        skip_ma_check = str(symbol).upper() == "SQQQ"
+                        skip_pullback_check = str(symbol).upper() == "SQQQ"
+                        if not (skip_ma_check and skip_pullback_check):
+                            if len(df) >= ma_fast_period:
+                                ma_fast = float(df["close"].rolling(ma_fast_period).mean().iloc[-1])
+                                if close <= ma_fast:
+                                    trend_long_ok = False
+                            if len(df) >= ma_slow_period:
+                                ma_slow = float(df["close"].rolling(ma_slow_period).mean().iloc[-1])
+                                if close <= ma_slow:
+                                    trend_long_ok = False
 
                         sentiment_score = 0.0
                         vol_ratio = None

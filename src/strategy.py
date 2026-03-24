@@ -144,6 +144,12 @@ class TrendFollowingStrategy:
         atr = _atr(df["high"], df["low"], df["close"], self.atr_period)
         return (atr / df["close"]) * 100
 
+    def min_history_bars_for_entry(self, symbol: str) -> int:
+        """SQQQ skips MA/pullback gates; only ATR + fast MA window needed."""
+        if str(symbol or "").upper() == "SQQQ":
+            return max(self.atr_period + 1, self.ma_fast, 20)
+        return self.ma_slow
+
     def generate_entry(
         self,
         symbol: str,
@@ -153,12 +159,18 @@ class TrendFollowingStrategy:
     ) -> EntrySignal | None:
         """Generate entry only when trend + pullback + volatility filter pass.
         atr_pct_now must be ATR% = (ATR/close)*100."""
-        if df is None or len(df) < self.ma_slow:
+        sym_u = str(symbol or "").upper()
+        skip_ma_check = sym_u == "SQQQ"
+        skip_pullback_check = sym_u == "SQQQ"
+        min_rows = self.min_history_bars_for_entry(symbol)
+        if df is None or len(df) < min_rows:
             return None
 
         close = df["close"]
         atr_pct = self.atr_pct(df)
-        if atr_pct.iloc[-1] > self.max_atr_pct_for_entry:
+        if atr_pct.empty or pd.isna(atr_pct.iloc[-1]):
+            return None
+        if float(atr_pct.iloc[-1]) > self.max_atr_pct_for_entry:
             return None
 
         ma_fast = close.rolling(self.ma_fast).mean()
@@ -168,17 +180,20 @@ class TrendFollowingStrategy:
         ma_f = ma_fast.iloc[-1]
         ma_s = ma_slow.iloc[-1]
 
-        # Uptrend: price above slow MA
-        if price <= ma_s or ma_s <= 0:
-            return None
-        # Entry mode: momentum = just above both MAs; pullback = price must be near fast MA
-        if self.entry_mode == "momentum":
-            if price <= ma_f or ma_f <= 0:
+        if not (skip_ma_check and skip_pullback_check):
+            # Uptrend: price above slow MA
+            if pd.isna(ma_s) or price <= ma_s or ma_s <= 0:
                 return None
-        else:
-            tol = self.pullback_tolerance_pct / 100.0
-            if self.pullback_touch_ma_fast and (ma_f <= 0 or abs(price - ma_f) / ma_f > tol):
-                return None
+            # Entry mode: momentum = just above both MAs; pullback = price must be near fast MA
+            if self.entry_mode == "momentum":
+                if pd.isna(ma_f) or price <= ma_f or ma_f <= 0:
+                    return None
+            else:
+                tol = self.pullback_tolerance_pct / 100.0
+                if self.pullback_touch_ma_fast and (
+                    pd.isna(ma_f) or ma_f <= 0 or abs(price - ma_f) / ma_f > tol
+                ):
+                    return None
 
         # Kill-switch: don't enter if spread/volatility already bad (atr_pct_now is ATR%)
         if spread_pct is not None and spread_pct > self.kill_switch_max_spread_pct:

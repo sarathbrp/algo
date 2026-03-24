@@ -236,7 +236,7 @@ class BacktestEngine:
                 if today not in df_sym.index:
                     continue
                 df_to_date = df_sym.loc[:today]
-                if len(df_to_date) < self.strategy.ma_slow:
+                if len(df_to_date) < self.strategy.min_history_bars_for_entry(sym):
                     continue
 
                 # Cooldown after stop
