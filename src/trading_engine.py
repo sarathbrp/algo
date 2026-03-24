@@ -316,6 +316,7 @@ class TradingEngine:
         partial_taken: bool = False,
         trail_high: float | None = None,
         current_qty: int = 0,
+        minutes_held: float | None = None,
     ) -> ExitSignal | None:
         """atr_pct must be ATR% = (ATR/close)*100, not a ratio or multiple."""
         return self.strategy.check_exit(
@@ -328,4 +329,5 @@ class TradingEngine:
             partial_taken=partial_taken,
             trail_high=trail_high,
             current_qty=current_qty,
+            minutes_held=minutes_held,
         )

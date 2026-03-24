@@ -44,6 +44,7 @@ Implemented by **`TrendFollowingStrategy`** in **`src/strategy.py`**.
 - If **`entry_mode`** were **`pullback`**, the logic would require price **near** the fast MA within **`pullback_tolerance_pct`** instead of strictly above both.
 
 **Exits (as committed, `strategy.exits`)**  
+- **`min_hold_minutes`** (e.g. `1440` = 1 day): no partial, trailing, time, kill-switch, or news-based exit until wall-clock hold elapsed in the live loop; **stop-loss still fires**. Daily backtest without wall-clock minutes uses ~`bars_held × 1440` as a proxy. Set **`0`** to disable.  
 - **Stop-loss** `stop_loss_pct` (1.5%).  
 - **Partial take-profit** at **`partial_take_profit_pct`** (3.0%) for **`partial_exit_ratio`** of the position (0.5).  
 - **Trailing stop** on the remainder **`trailing_stop_pct`** (3.0%) when **`use_trailing_stop`** is true.  
@@ -56,7 +57,7 @@ Implemented by **`TrendFollowingStrategy`** in **`src/strategy.py`**.
 - **`entry_check_interval_minutes`**: 10 — when elapsed, runs **regime** (% of universe above 50D MA), optional **market_regime** scorer (size multiplier), **bear-ETF** breakdown path, then **long entries** per symbol with a **cheap prefilter** (already in position / open order / tracked, then **close &gt; fast &amp; slow MA**, spread, cash) before **`run_entry_gates`**. Optional **news-driven** entry uses **`entry_override`** only when news is enabled and not `--live`.
 
 ### 4) Position sizing (`position_sizing` in `default.yaml`)
-- As committed: **`risk_per_trade_pct` 0.25**, **`max_open_risk_pct` 3.0**, **`max_exposure_per_symbol_pct` 8**, **`max_position_dollar_cap` 2000**, **`max_exposure_per_sector_pct` 40**, optional **high-vol reduction** (e.g. half size when ATR% &gt; threshold).
+- As committed: **`risk_per_trade_pct` 0.25**, **`max_open_risk_pct` 3.0**, **`max_exposure_per_symbol_pct` 10**, **`max_position_dollar_cap` 2000**, **`max_exposure_per_sector_pct` 25**, optional **high-vol reduction** (e.g. half size when ATR% &gt; threshold).
 
 ### 5) Portfolio & drawdown (`portfolio_risk`)
 - As committed: **daily loss limit** −2%, **max drawdown** −10% with **safe mode**, **max_trades_per_day** 15, **max_trades_per_symbol_per_day** 3 (tune in YAML).
@@ -246,7 +247,7 @@ Nested **`pre_market`**, **`regular`**, **`after_hours`**: each has **`start`**,
 | **`retail`** | `ma_fast`, `ma_slow`, `time_bars_exit` (overrides `strategy.exits.time_bars_exit` when retail is active — live loop uses **calendar days** for time exit) |
 | **`candlestick_filter`** | `enabled`, `patterns` (e.g. `bullish_engulfing`, `hammer`, `doji`) |
 | **`trend_following`** | `entry_mode` (`momentum` or `pullback`), `ma_fast` / `ma_slow`, `pullback_touch_ma_fast`, `pullback_tolerance_pct`, `volatility_filter_atr_period`, `max_atr_pct_for_entry` |
-| **`exits`** | `stop_loss_pct`, cooldown / re-entry flags (`cooldown_after_stop_minutes`, `require_new_breakout_after_stop`, `cooldown_after_profit_minutes`, `require_price_above_exit_after_profit`), `take_profit_pct`, `use_trailing_stop`, `trailing_stop_pct`, `partial_take_profit_pct`, `partial_exit_ratio`, `time_bars_exit`, **`kill_switch`** (`max_spread_pct`, `max_atr_pct`) |
+| **`exits`** | `stop_loss_pct`, **`min_hold_minutes`** (wall-clock; `0` = off; blocks partial / trail / time / kill-switch / news exit, not stop-loss), cooldown / re-entry flags (`cooldown_after_stop_minutes`, `require_new_breakout_after_stop`, `cooldown_after_profit_minutes`, `require_price_above_exit_after_profit`), `take_profit_pct`, `use_trailing_stop`, `trailing_stop_pct`, `partial_take_profit_pct`, `partial_exit_ratio`, `time_bars_exit`, **`kill_switch`** (`max_spread_pct`, `max_atr_pct`) |
 
 #### `position_sizing`
 

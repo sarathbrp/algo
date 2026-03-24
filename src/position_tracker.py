@@ -93,3 +93,20 @@ def bars_held(entry_time_iso: str, now: datetime | None = None) -> int:
     if t.tzinfo is None:
         t = t.replace(tzinfo=timezone.utc)
     return max(0, (now - t).days)
+
+
+def minutes_held(entry_time_iso: str, now: datetime | None = None) -> float:
+    """Wall-clock minutes since entry (for strategy.exits.min_hold_minutes)."""
+    if not entry_time_iso or not str(entry_time_iso).strip():
+        return 0.0
+    try:
+        s = str(entry_time_iso).replace("Z", "+00:00")
+        t = datetime.fromisoformat(s)
+    except Exception:
+        return 0.0
+    now = now or datetime.now(timezone.utc)
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    return max(0.0, (now - t).total_seconds() / 60.0)

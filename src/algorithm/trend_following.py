@@ -51,6 +51,10 @@ class TrendFollowingAlgorithm(QCAlgorithm):
                 continue
             bars_held = self._bars_held(pos.entry_time, dt)
             atr_pct = self._atr_pct_for_symbol(context, symbol, bar.close) if data_df and symbol in data_df else None
+            try:
+                wall_mins = max(0.0, (dt - pos.entry_time).total_seconds() / 60.0)
+            except Exception:
+                wall_mins = None
 
             exit_signal = self._strategy.check_exit(
                 symbol,
@@ -62,6 +66,7 @@ class TrendFollowingAlgorithm(QCAlgorithm):
                 partial_taken=pos.partial_taken,
                 trail_high=pos.trail_high or pos.entry_price,
                 current_qty=pos.quantity,
+                minutes_held=wall_mins,
             )
 
             if exit_signal is None:
