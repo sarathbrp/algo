@@ -25,6 +25,7 @@ from src.universe import MarketCalendar, SessionType
 from src.position_tracker import (
     load as load_tracked,
     add as add_tracked,
+    merge_add_shares as merge_add_tracked,
     remove as remove_tracked,
     update as update_tracked,
     bars_held,
@@ -304,6 +305,7 @@ def main() -> None:
                     print(dt.strftime("%H:%M ET"), "— regime filter skip:", type(e).__name__, str(e)[:50])
 
         if do_entry_check:
+            boost_inverse_etf_priority = bool(bearish_regime)
             # Market regime: fetch SPY/QQQ/VIX/HYG/TLT bars for position size multiplier
             regime_multiplier = None
             if regime_scorer.enabled:
@@ -320,6 +322,9 @@ def main() -> None:
                 except Exception as e:
                     if verbose:
                         print(dt.strftime("%H:%M ET"), "— regime skip:", type(e).__name__, str(e)[:50])
+            bear_inv_regime_mult = regime_multiplier
+            if boost_inverse_etf_priority:
+                bear_inv_regime_mult = max(regime_multiplier, 1.0) if regime_multiplier is not None else 1.0
             if verbose:
                 print(dt.strftime("%H:%M ET"), "Entry check: equity $%.0f, positions %d" % (account_equity, len(positions)))
             open_orders = broker.get_open_orders()
@@ -344,6 +349,8 @@ def main() -> None:
                 elif verbose:
                     print(dt.strftime("%H:%M ET"), "— bear ETFs: QQQ breakdown but SQQQ not in bear_etfs.symbols; using full list")
             breakdown_detected = False
+            ref_close: float | None = None
+            ref_ma: float | None = None
             if bearish_regime and bear_etf_symbols and ref_symbol:
                 try:
                     ref_bars = broker.get_bars(ref_symbol, timeframe="1Day", limit=breakdown_ma_period + 10)
@@ -402,6 +409,7 @@ def main() -> None:
                             current_positions,
                             sector_exposure_pct,
                             symbol_sector=None,
+                            regime_size_multiplier=bear_inv_regime_mult,
                         )
                         if not sizing or sizing.shares <= 0:
                             continue
@@ -422,6 +430,99 @@ def main() -> None:
                         if verbose:
                             print("  %s: bear ETF skip —" % symbol, type(e).__name__, str(e)[:60])
                         continue
+
+                # SQQQ: optional small add when already long, reference is well below MA, room under inverse cap
+                sqqq_add_cfg = bear_etfs_cfg.get("sqqq_add_on_strong_trend") or {}
+                if (
+                    bool(sqqq_add_cfg.get("enabled", False))
+                    and "SQQQ" in bear_etf_universe_set
+                    and ref_close is not None
+                    and ref_ma is not None
+                    and ref_ma > 0
+                ):
+                    dist_pct = (ref_ma - ref_close) / ref_ma * 100.0
+                    min_dist = float(sqqq_add_cfg.get("reference_ma_distance_pct_min", 1.5))
+                    size_mult = float(sqqq_add_cfg.get("size_multiplier", 0.35))
+                    trend_strong = dist_pct >= min_dist
+                    sqqq_sym = "SQQQ"
+                    sqqq_in_pos = sqqq_sym in current_positions
+                    if (
+                        trend_strong
+                        and sqqq_in_pos
+                        and sqqq_sym not in open_order_symbols
+                        and current_bear_etf_notional < max_bear_etf_notional - 1e-6
+                    ):
+                        try:
+                            df_s = broker.get_bars(sqqq_sym, timeframe="1Day", limit=60)
+                            if not df_s.empty and len(df_s) >= 20:
+                                close_s = float(df_s["close"].iloc[-1])
+                                quote_s = broker.get_latest_quote(sqqq_sym)
+                                if quote_s and getattr(quote_s, "is_stale", None) and quote_s.is_stale(stale_quote_max_age):
+                                    spread_pct_s = 0.15
+                                else:
+                                    spread_pct_s = quote_s.spread_pct if quote_s else 0.15
+                                spread_cap_s = engine.market_quality._max_spread_for_symbol(sqqq_sym)
+                                if spread_pct_s is None or spread_pct_s <= spread_cap_s:
+                                    sizing_s = engine.sizer.size_position(
+                                        account_equity,
+                                        close_s,
+                                        bear_etf_stop_pct,
+                                        sqqq_sym,
+                                        current_positions,
+                                        sector_exposure_pct,
+                                        symbol_sector=None,
+                                        regime_size_multiplier=bear_inv_regime_mult,
+                                    )
+                                    if sizing_s and sizing_s.shares > 0:
+                                        add_sh = max(1, int(sizing_s.shares * size_mult))
+                                        add_notional = add_sh * close_s
+                                        room = max_bear_etf_notional - current_bear_etf_notional
+                                        if add_notional > room and close_s > 0:
+                                            add_sh = max(0, int(room / close_s))
+                                            add_notional = add_sh * close_s
+                                        buying_power_s = broker.get_buying_power()
+                                        if (
+                                            add_sh > 0
+                                            and add_notional <= room
+                                            and add_notional <= buying_power_s
+                                        ):
+                                            buy_order_s = engine.execution.build_order(
+                                                sqqq_sym,
+                                                "buy",
+                                                add_sh,
+                                                quote_s.mid if quote_s else close_s,
+                                                spread_pct_s or 0.15,
+                                            )
+                                            if buy_order_s:
+                                                broker.submit_order(buy_order_s)
+                                                current_bear_etf_notional += add_notional
+                                                prev = current_positions.get(sqqq_sym, {})
+                                                merge_add_tracked(
+                                                    tracker_path,
+                                                    sqqq_sym,
+                                                    add_sh,
+                                                    close_s,
+                                                    bear_etf_stop_pct,
+                                                )
+                                                current_positions[sqqq_sym] = {
+                                                    "notional": float(prev.get("notional", 0)) + add_notional,
+                                                    "stop_pct": bear_etf_stop_pct,
+                                                }
+                                                print(
+                                                    dt.strftime("%H:%M ET"),
+                                                    sqqq_sym,
+                                                    "BUY (add, strong ref trend %.1f%% below MA)" % dist_pct,
+                                                    add_sh,
+                                                    "shares",
+                                                )
+                                        elif verbose and add_sh > 0:
+                                            print(
+                                                "  %s: skip add — room $%.0f need $%.0f bp $%.0f"
+                                                % (sqqq_sym, room, add_notional, buying_power_s)
+                                            )
+                        except Exception as e:
+                            if verbose:
+                                print("  SQQQ add skip —", type(e).__name__, str(e)[:60])
 
             universe_cfg = config.get("universe", {})
             bearish_allow_longs = bool(universe_cfg.get("bearish_allow_trend_long_entries", False))

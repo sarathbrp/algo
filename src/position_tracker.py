@@ -50,6 +50,38 @@ def add(
     save(data, base_path)
 
 
+def merge_add_shares(
+    base_path: Path | None,
+    symbol: str,
+    add_qty: int,
+    fill_price: float,
+    stop_pct: float | None = None,
+) -> None:
+    """Increase qty for an open position; weight-average entry_price. If not tracked, same as add()."""
+    if add_qty <= 0:
+        return
+    data = load(base_path)
+    key = symbol.upper()
+    if key not in data:
+        add(base_path, symbol, add_qty, fill_price, stop_pct if stop_pct is not None else 2.0)
+        return
+    old = data[key]
+    oq = int(old.get("qty", 0))
+    oe = float(old.get("entry_price", 0) or 0)
+    new_q = oq + add_qty
+    if new_q <= 0:
+        return
+    if oq > 0 and oe > 0:
+        new_e = (oe * oq + fill_price * add_qty) / new_q
+    else:
+        new_e = fill_price
+    data[key]["qty"] = new_q
+    data[key]["entry_price"] = new_e
+    if stop_pct is not None:
+        data[key]["stop_pct"] = stop_pct
+    save(data, base_path)
+
+
 def update(
     base_path: Path | None,
     symbol: str,
