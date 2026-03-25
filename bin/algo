@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+PY="${PYTHON:-python3}"
+
+cmd="${1:-help}"
+if [[ $# -gt 0 ]]; then shift; fi
+
+case "$cmd" in
+  loop|paper)
+    exec "$PY" scripts/run_alpaca_loop.py --paper "$@"
+    ;;
+  loop-live|live)
+    exec "$PY" scripts/run_alpaca_loop.py --live "$@"
+    ;;
+  loop-v)
+    exec "$PY" scripts/run_alpaca_loop.py --paper --verbose "$@"
+    ;;
+  once)
+    exec "$PY" scripts/run_alpaca.py "$@"
+    ;;
+  example)
+    exec "$PY" scripts/run_example.py "$@"
+    ;;
+  backtest)
+    exec "$PY" scripts/run_backtest.py "$@"
+    ;;
+  equity)
+    exec "$PY" scripts/check_equity.py "$@"
+    ;;
+  prices)
+    exec "$PY" scripts/check_prices.py "$@"
+    ;;
+  positions)
+    exec "$PY" scripts/check_positions.py "$@"
+    ;;
+  charts)
+    exec "$PY" scripts/show_position_charts.py "$@"
+    ;;
+  sells|strategy)
+    exec "$PY" scripts/show_sell_strategy.py "$@"
+    ;;
+  summary|daily)
+    exec "$PY" scripts/show_daily_summary.py "$@"
+    ;;
+  reset)
+    exec "$PY" scripts/reset_paper.py "$@"
+    ;;
+  download-data)
+    exec "$PY" scripts/download_backtest_data.py "$@"
+    ;;
+  scheduled)
+    exec "$PY" scripts/run_scheduled_alpaca.py "$@"
+    ;;
+  help|--help|-h)
+    cat <<'EOF'
+Usage: ./bin/algo <command> [args passed through to the script]
+
+  loop         run_alpaca_loop.py --paper
+  loop-live    run_alpaca_loop.py --live
+  loop-v       loop + --verbose
+  once         run_alpaca.py
+  example      run_example.py
+  backtest     run_backtest.py
+  equity       check_equity.py
+  prices       check_prices.py
+  positions    check_positions.py
+  charts       show_position_charts.py
+  sells        show_sell_strategy.py
+  summary      show_daily_summary.py [YYYY-MM-DD]
+  reset        reset_paper.py
+  download-data   download_backtest_data.py
+  scheduled    run_scheduled_alpaca.py
+
+Or from repo root:  make loop-paper   |   make help
+
+Override Python:    PYTHON=python3.12 ./bin/algo loop
+EOF
+    ;;
+  *)
+    echo "Unknown command: $cmd" >&2
+    "$0" help
+    exit 1
+    ;;
+esac
