@@ -345,6 +345,47 @@ market_regime:
     defensive: 0.5   # half size when score 0–1
 
 # ---------------------------------------------------------------------------
+# 4c) Options (v1 scaffold — not executed by run_alpaca_loop until implemented)
+# ---------------------------------------------------------------------------
+# Long premium only: buy calls/puts; no short premium / no selling uncovered.
+options:
+  enabled: true            # keep false for now
+  mode: long_premium_only   # calls/puts only, no selling
+  # Limits use premium paid (mid × contracts × 100), not stock notional — see src/options_premium_risk.py
+  max_total_options_exposure_pct: 5   # sum(existing option cost_basis) + new premium <= this % of equity
+  max_option_position_pct: 2          # per-trade premium budget = min(this % equity, room under total cap)
+  max_open_option_positions: 1
+  # v1: contracts = floor(budget / (mid×100)); if 0 → skip "premium too expensive"; then cap at this many
+  v1_max_contracts_per_trade: 1       # bullish → up to N ATM calls; bearish → up to N ATM puts
+
+  allowed_underlyings:
+    - SPY
+    - QQQ
+    - NVDA
+
+  contract_selection:
+    expiry_min_days: 14
+    expiry_max_days: 35
+    moneyness: ATM          # ATM only for v1
+    max_bid_ask_spread_pct: 5.0
+    min_open_interest: 500
+    min_volume: 100
+
+  entry_mapping:
+    bullish_signal: call
+    bearish_signal: put
+
+  exits:
+    profit_take_pct: 40
+    stop_loss_pct: 30
+    max_hold_days: 5
+    exit_if_underlying_breaks_signal: true
+
+  compliance:
+    block_if_pdt_risk: true
+    use_cash_account_safe_mode: true
+
+# ---------------------------------------------------------------------------
 # 5) Execution
 # ---------------------------------------------------------------------------
 execution:

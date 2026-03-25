@@ -34,13 +34,38 @@ from src.position_tracker import (
 from src.strategy import ExitReason, EntrySignal
 from src.market_regime import MarketRegimeScorer
 from src.news_sentiment import NewsSentimentPipeline, NewsRuleEngine, volume_spike_ratio
+from src.entry_router import (
+    EntryRouteSignal,
+    route_to_options_executor,
+    route_to_stock_executor,
+    should_use_options,
+)
+
+
+def _log_entry_skip(
+    dt: datetime,
+    symbol: str,
+    reason: str,
+    *,
+    verbose: bool,
+    force: bool = False,
+) -> None:
+    """Print `SYMBOL skip — reason`. If force, always print; else print when verbose or symbol is SQQQ."""
+    sym_u = str(symbol).upper()
+    if force or verbose or sym_u == "SQQQ":
+        print(dt.strftime("%H:%M ET"), f"{sym_u} skip — {reason}")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run trading loop until market close")
     parser.add_argument("--live", action="store_true", help="Use live account (real money)")
     parser.add_argument("--paper", action="store_true", help="Use paper account (default)")
-    parser.add_argument("--verbose", "-v", action="store_true", help="Print why each symbol is skipped (no trade)")
+    parser.add_argument(
+        "--verbose",
+        "-v",
+        action="store_true",
+        help="Print skip reasons for all symbols in trend scan; inverse (SQQQ/SPXS) skips always print without -v",
+    )
     args = parser.parse_args()
     if args.live and args.paper:
         parser.error("Use only one of --live or --paper")
@@ -338,6 +363,14 @@ def main() -> None:
             bear_etf_all_raw = list(bear_etfs_cfg.get("symbols") or [])
             bear_etf_universe_set = {str(s).upper() for s in bear_etf_all_raw}
             bear_etf_symbols = list(bear_etf_all_raw)
+            if not bearish_regime and "SQQQ" in bear_etf_universe_set:
+                _log_entry_skip(
+                    dt,
+                    "SQQQ",
+                    "not bearish regime (breadth filter)",
+                    verbose=verbose,
+                    force=True,
+                )
             breakdown_cfg = bear_etfs_cfg.get("breakdown", {}) or {}
             ref_symbol = breakdown_cfg.get("reference_symbol") or "QQQ"
             breakdown_ma_period = int(breakdown_cfg.get("ma_period") or 50)
@@ -411,19 +444,70 @@ def main() -> None:
                     {s for s in bear_etf_universe_set if s in pos_bear_syms or s in tracked_upper}
                 )
                 for symbol in bear_etf_symbols:
-                    if current_bear_etf >= max_bear_etf_positions:
-                        break
                     sym_u = str(symbol).upper()
+                    if current_bear_etf >= max_bear_etf_positions:
+                        _log_entry_skip(
+                            dt,
+                            sym_u,
+                            "max inverse ETF positions (%d)" % max_bear_etf_positions,
+                            verbose=verbose,
+                            force=True,
+                        )
+                        break
                     if sym_u == "SQQQ":
                         if not qqq_below_ma50:
+                            if qqq_price is None or qqq_ma50 is None:
+                                _log_entry_skip(
+                                    dt,
+                                    sym_u,
+                                    "QQQ vs 50D MA unavailable (insufficient data or API)",
+                                    verbose=verbose,
+                                    force=True,
+                                )
+                            else:
+                                _log_entry_skip(
+                                    dt,
+                                    sym_u,
+                                    "QQQ not below 50D MA (QQQ %.2f >= MA %.2f)" % (qqq_price, qqq_ma50),
+                                    verbose=verbose,
+                                    force=True,
+                                )
                             continue
                     elif not breakdown_detected:
+                        _log_entry_skip(
+                            dt,
+                            sym_u,
+                            "no breakdown (%s not below %dD MA)" % (ref_symbol, breakdown_ma_period),
+                            verbose=verbose,
+                            force=True,
+                        )
                         continue
-                    if symbol in current_positions or symbol.upper() in open_order_symbols or symbol.upper() in tracked:
+                    reasons_block = []
+                    if symbol in current_positions:
+                        reasons_block.append("already in positions")
+                    if symbol.upper() in open_order_symbols:
+                        reasons_block.append("open buy/sell order")
+                    if symbol.upper() in tracked:
+                        reasons_block.append("in tracked state")
+                    if reasons_block:
+                        _log_entry_skip(
+                            dt,
+                            sym_u,
+                            "; ".join(reasons_block),
+                            verbose=verbose,
+                            force=True,
+                        )
                         continue
                     try:
                         df = broker.get_bars(symbol, timeframe="1Day", limit=60)
                         if df.empty or len(df) < 20:
+                            _log_entry_skip(
+                                dt,
+                                sym_u,
+                                "not enough daily bars (need 20, got %d)" % (0 if df.empty else len(df)),
+                                verbose=verbose,
+                                force=True,
+                            )
                             continue
                         close = float(df["close"].iloc[-1])
                         quote = broker.get_latest_quote(symbol)
@@ -433,8 +517,22 @@ def main() -> None:
                             spread_pct = quote.spread_pct if quote else 0.15
                         spread_cap = engine.market_quality._max_spread_for_symbol(symbol)
                         if spread_pct is not None and spread_pct > spread_cap:
+                            _log_entry_skip(
+                                dt,
+                                sym_u,
+                                "spread %.3f%% > cap %.3f%%" % (spread_pct, spread_cap),
+                                verbose=verbose,
+                                force=True,
+                            )
                             continue
                         if close * 1 > available_cash:
+                            _log_entry_skip(
+                                dt,
+                                sym_u,
+                                "insufficient buying power (1 share ~$%.2f > $%.2f available)" % (close, available_cash),
+                                verbose=verbose,
+                                force=True,
+                            )
                             continue
                         sizing = engine.sizer.size_position(
                             account_equity,
@@ -447,118 +545,268 @@ def main() -> None:
                             regime_size_multiplier=bear_inv_regime_mult,
                         )
                         if not sizing or sizing.shares <= 0:
+                            rr = getattr(sizing, "reject_reason", None) if sizing else None
+                            _log_entry_skip(
+                                dt,
+                                sym_u,
+                                "position size rejected (%s)" % (rr or "zero shares"),
+                                verbose=verbose,
+                                force=True,
+                            )
                             continue
                         if current_bear_etf_notional + sizing.notional > max_bear_etf_notional:
-                            if verbose:
-                                print("  %s: skip — inverse ETF exposure cap (%.0f%% equity)" % (symbol, max_bear_etf_pct))
+                            _log_entry_skip(
+                                dt,
+                                sym_u,
+                                "inverse ETF exposure cap (%.0f%% equity ≈ $%.0f max, current $%.0f + new $%.0f)"
+                                % (
+                                    max_bear_etf_pct,
+                                    max_bear_etf_notional,
+                                    current_bear_etf_notional,
+                                    sizing.notional,
+                                ),
+                                verbose=verbose,
+                                force=True,
+                            )
                             continue
                         buy_order = engine.execution.build_order(symbol, "buy", sizing.shares, quote.mid if quote else close, spread_pct or 0.15)
                         if not buy_order:
+                            _log_entry_skip(dt, sym_u, "execution could not build order", verbose=verbose, force=True)
                             continue
-                        broker.submit_order(buy_order)
-                        current_bear_etf_notional += sizing.notional
-                        add_tracked(tracker_path, symbol, sizing.shares, close, bear_etf_stop_pct, side="long")
-                        current_bear_etf += 1
-                        current_positions[symbol] = {"notional": sizing.notional, "stop_pct": bear_etf_stop_pct}
-                        label = "QQQ < MA50" if sym_u == "SQQQ" else "breakdown"
-                        print(dt.strftime("%H:%M ET"), symbol, "BUY (bear ETF, %s)" % label, sizing.shares, "shares")
+                        opts_cfg = config.get("options") or {}
+                        und = "QQQ" if sym_u == "SQQQ" else ("SPY" if sym_u == "SPXS" else sym_u)
+                        signal_bear = EntryRouteSignal(
+                            underlying=und,
+                            direction="bearish",
+                            source="bear_etf",
+                            stock_symbol=sym_u,
+                        )
+                        u_spot = None
+                        uq_und = broker.get_latest_quote(und)
+                        if uq_und is not None and getattr(uq_und, "mid", None):
+                            try:
+                                u_spot = float(uq_und.mid)
+                            except (TypeError, ValueError):
+                                u_spot = None
+                        options_handled = False
+                        if opts_cfg.get("enabled") and should_use_options(config, signal_bear):
+                            options_handled = route_to_options_executor(
+                                config,
+                                signal_bear,
+                                log_dt=dt,
+                                verbose=verbose,
+                                account_equity=account_equity,
+                                positions=positions,
+                                broker=broker,
+                                execution_manager=engine.execution,
+                                chain_candidates=None,
+                                underlying_spot=u_spot,
+                            )
+                        if not options_handled:
+
+                            def _bear_stock_execute() -> None:
+                                nonlocal current_bear_etf_notional, current_bear_etf, current_positions
+                                broker.submit_order(buy_order)
+                                current_bear_etf_notional += sizing.notional
+                                add_tracked(tracker_path, symbol, sizing.shares, close, bear_etf_stop_pct, side="long")
+                                current_bear_etf += 1
+                                current_positions[symbol] = {"notional": sizing.notional, "stop_pct": bear_etf_stop_pct}
+                                label_local = "QQQ < MA50" if sym_u == "SQQQ" else "breakdown"
+                                print(
+                                    dt.strftime("%H:%M ET"),
+                                    symbol,
+                                    "BUY (bear ETF, %s)" % label_local,
+                                    sizing.shares,
+                                    "shares",
+                                )
+
+                            route_to_stock_executor(signal_bear, _bear_stock_execute)
                     except Exception as e:
-                        if verbose:
-                            print("  %s: bear ETF skip —" % symbol, type(e).__name__, str(e)[:60])
+                        _log_entry_skip(
+                            dt,
+                            sym_u,
+                            "%s: %s" % (type(e).__name__, str(e)[:80]),
+                            verbose=verbose,
+                            force=True,
+                        )
                         continue
 
                 # SQQQ: optional small add when already long, QQQ well below 50D MA, room under inverse cap
                 sqqq_add_cfg = bear_etfs_cfg.get("sqqq_add_on_strong_trend") or {}
-                if (
-                    bool(sqqq_add_cfg.get("enabled", False))
-                    and "SQQQ" in bear_etf_universe_set
-                    and qqq_price is not None
-                    and qqq_ma50 is not None
-                    and qqq_ma50 > 0
-                ):
-                    dist_pct = (qqq_ma50 - qqq_price) / qqq_ma50 * 100.0
+                sqqq_sym = "SQQQ"
+                if bool(sqqq_add_cfg.get("enabled", False)) and "SQQQ" in bear_etf_universe_set:
                     min_dist = float(sqqq_add_cfg.get("reference_ma_distance_pct_min", 1.5))
                     size_mult = float(sqqq_add_cfg.get("size_multiplier", 0.35))
-                    trend_strong = dist_pct >= min_dist
-                    sqqq_sym = "SQQQ"
-                    sqqq_in_pos = sqqq_sym in current_positions
-                    if (
-                        trend_strong
-                        and sqqq_in_pos
-                        and sqqq_sym not in open_order_symbols
-                        and current_bear_etf_notional < max_bear_etf_notional - 1e-6
-                    ):
-                        try:
-                            df_s = broker.get_bars(sqqq_sym, timeframe="1Day", limit=60)
-                            if not df_s.empty and len(df_s) >= 20:
-                                close_s = float(df_s["close"].iloc[-1])
-                                quote_s = broker.get_latest_quote(sqqq_sym)
-                                if quote_s and getattr(quote_s, "is_stale", None) and quote_s.is_stale(stale_quote_max_age):
-                                    spread_pct_s = 0.15
-                                else:
-                                    spread_pct_s = quote_s.spread_pct if quote_s else 0.15
-                                spread_cap_s = engine.market_quality._max_spread_for_symbol(sqqq_sym)
-                                if spread_pct_s is None or spread_pct_s <= spread_cap_s:
-                                    sizing_s = engine.sizer.size_position(
-                                        account_equity,
-                                        close_s,
-                                        bear_etf_stop_pct,
+                    if qqq_price is None or qqq_ma50 is None or qqq_ma50 <= 0:
+                        _log_entry_skip(
+                            dt,
+                            sqqq_sym,
+                            "add skipped — QQQ vs 50D MA data missing",
+                            verbose=verbose,
+                            force=True,
+                        )
+                    else:
+                        dist_pct = (qqq_ma50 - qqq_price) / qqq_ma50 * 100.0
+                        trend_strong = dist_pct >= min_dist
+                        sqqq_in_pos = sqqq_sym in current_positions
+                        if not trend_strong:
+                            _log_entry_skip(
+                                dt,
+                                sqqq_sym,
+                                "add skipped — QQQ only %.2f%% below MA50 (need >= %.2f%%)" % (dist_pct, min_dist),
+                                verbose=verbose,
+                                force=True,
+                            )
+                        elif not sqqq_in_pos:
+                            _log_entry_skip(
+                                dt,
+                                sqqq_sym,
+                                "add skipped — no existing SQQQ position",
+                                verbose=verbose,
+                                force=True,
+                            )
+                        elif sqqq_sym in open_order_symbols:
+                            _log_entry_skip(
+                                dt,
+                                sqqq_sym,
+                                "add skipped — open order pending",
+                                verbose=verbose,
+                                force=True,
+                            )
+                        elif current_bear_etf_notional >= max_bear_etf_notional - 1e-6:
+                            _log_entry_skip(
+                                dt,
+                                sqqq_sym,
+                                "add skipped — inverse exposure at cap (~$%.0f)" % max_bear_etf_notional,
+                                verbose=verbose,
+                                force=True,
+                            )
+                        elif (
+                            trend_strong
+                            and sqqq_in_pos
+                            and sqqq_sym not in open_order_symbols
+                            and current_bear_etf_notional < max_bear_etf_notional - 1e-6
+                        ):
+                            try:
+                                df_s = broker.get_bars(sqqq_sym, timeframe="1Day", limit=60)
+                                if df_s.empty or len(df_s) < 20:
+                                    _log_entry_skip(
+                                        dt,
                                         sqqq_sym,
-                                        current_positions,
-                                        sector_exposure_pct,
-                                        symbol_sector=None,
-                                        regime_size_multiplier=bear_inv_regime_mult,
+                                        "add skipped — not enough daily bars (got %d)"
+                                        % (0 if df_s.empty else len(df_s)),
+                                        verbose=verbose,
+                                        force=True,
                                     )
-                                    if sizing_s and sizing_s.shares > 0:
-                                        add_sh = max(1, int(sizing_s.shares * size_mult))
-                                        add_notional = add_sh * close_s
-                                        room = max_bear_etf_notional - current_bear_etf_notional
-                                        if add_notional > room and close_s > 0:
-                                            add_sh = max(0, int(room / close_s))
-                                            add_notional = add_sh * close_s
-                                        buying_power_s = broker.get_buying_power()
-                                        if (
-                                            add_sh > 0
-                                            and add_notional <= room
-                                            and add_notional <= buying_power_s
-                                        ):
-                                            buy_order_s = engine.execution.build_order(
+                                else:
+                                    close_s = float(df_s["close"].iloc[-1])
+                                    quote_s = broker.get_latest_quote(sqqq_sym)
+                                    if quote_s and getattr(quote_s, "is_stale", None) and quote_s.is_stale(stale_quote_max_age):
+                                        spread_pct_s = 0.15
+                                    else:
+                                        spread_pct_s = quote_s.spread_pct if quote_s else 0.15
+                                    spread_cap_s = engine.market_quality._max_spread_for_symbol(sqqq_sym)
+                                    if spread_pct_s is not None and spread_pct_s > spread_cap_s:
+                                        _log_entry_skip(
+                                            dt,
+                                            sqqq_sym,
+                                            "add skipped — spread %.3f%% > cap %.3f%%"
+                                            % (spread_pct_s, spread_cap_s),
+                                            verbose=verbose,
+                                            force=True,
+                                        )
+                                    else:
+                                        sizing_s = engine.sizer.size_position(
+                                            account_equity,
+                                            close_s,
+                                            bear_etf_stop_pct,
+                                            sqqq_sym,
+                                            current_positions,
+                                            sector_exposure_pct,
+                                            symbol_sector=None,
+                                            regime_size_multiplier=bear_inv_regime_mult,
+                                        )
+                                        if not sizing_s or sizing_s.shares <= 0:
+                                            rr = getattr(sizing_s, "reject_reason", None) if sizing_s else None
+                                            _log_entry_skip(
+                                                dt,
                                                 sqqq_sym,
-                                                "buy",
-                                                add_sh,
-                                                quote_s.mid if quote_s else close_s,
-                                                spread_pct_s or 0.15,
+                                                "add skipped — sizing rejected (%s)"
+                                                % (rr or "zero shares"),
+                                                verbose=verbose,
+                                                force=True,
                                             )
-                                            if buy_order_s:
-                                                broker.submit_order(buy_order_s)
-                                                current_bear_etf_notional += add_notional
-                                                prev = current_positions.get(sqqq_sym, {})
-                                                merge_add_tracked(
-                                                    tracker_path,
+                                        else:
+                                            add_sh = max(1, int(sizing_s.shares * size_mult))
+                                            add_notional = add_sh * close_s
+                                            room = max_bear_etf_notional - current_bear_etf_notional
+                                            if add_notional > room and close_s > 0:
+                                                add_sh = max(0, int(room / close_s))
+                                                add_notional = add_sh * close_s
+                                            buying_power_s = broker.get_buying_power()
+                                            if add_sh <= 0:
+                                                _log_entry_skip(
+                                                    dt,
                                                     sqqq_sym,
-                                                    add_sh,
-                                                    close_s,
-                                                    bear_etf_stop_pct,
+                                                    "add skipped — clipped to 0 shares (room $%.0f)" % room,
+                                                    verbose=verbose,
+                                                    force=True,
                                                 )
-                                                current_positions[sqqq_sym] = {
-                                                    "notional": float(prev.get("notional", 0)) + add_notional,
-                                                    "stop_pct": bear_etf_stop_pct,
-                                                }
-                                                print(
-                                                    dt.strftime("%H:%M ET"),
+                                            elif add_notional > buying_power_s:
+                                                _log_entry_skip(
+                                                    dt,
                                                     sqqq_sym,
-                                                    "BUY (add, strong ref trend %.1f%% below MA)" % dist_pct,
-                                                    add_sh,
-                                                    "shares",
+                                                    "add skipped — buying power (need $%.0f, have $%.0f)"
+                                                    % (add_notional, buying_power_s),
+                                                    verbose=verbose,
+                                                    force=True,
                                                 )
-                                        elif verbose and add_sh > 0:
-                                            print(
-                                                "  %s: skip add — room $%.0f need $%.0f bp $%.0f"
-                                                % (sqqq_sym, room, add_notional, buying_power_s)
-                                            )
-                        except Exception as e:
-                            if verbose:
-                                print("  SQQQ add skip —", type(e).__name__, str(e)[:60])
+                                            else:
+                                                buy_order_s = engine.execution.build_order(
+                                                    sqqq_sym,
+                                                    "buy",
+                                                    add_sh,
+                                                    quote_s.mid if quote_s else close_s,
+                                                    spread_pct_s or 0.15,
+                                                )
+                                                if not buy_order_s:
+                                                    _log_entry_skip(
+                                                        dt,
+                                                        sqqq_sym,
+                                                        "add skipped — could not build order",
+                                                        verbose=verbose,
+                                                        force=True,
+                                                    )
+                                                else:
+                                                    broker.submit_order(buy_order_s)
+                                                    current_bear_etf_notional += add_notional
+                                                    prev = current_positions.get(sqqq_sym, {})
+                                                    merge_add_tracked(
+                                                        tracker_path,
+                                                        sqqq_sym,
+                                                        add_sh,
+                                                        close_s,
+                                                        bear_etf_stop_pct,
+                                                    )
+                                                    current_positions[sqqq_sym] = {
+                                                        "notional": float(prev.get("notional", 0)) + add_notional,
+                                                        "stop_pct": bear_etf_stop_pct,
+                                                    }
+                                                    print(
+                                                        dt.strftime("%H:%M ET"),
+                                                        sqqq_sym,
+                                                        "BUY (add, strong ref trend %.1f%% below MA)" % dist_pct,
+                                                        add_sh,
+                                                        "shares",
+                                                    )
+                            except Exception as e:
+                                _log_entry_skip(
+                                    dt,
+                                    sqqq_sym,
+                                    "add skipped — %s: %s" % (type(e).__name__, str(e)[:60]),
+                                    verbose=verbose,
+                                    force=True,
+                                )
 
             universe_cfg = config.get("universe", {})
             bearish_allow_longs = bool(universe_cfg.get("bearish_allow_trend_long_entries", False))
@@ -590,24 +838,44 @@ def main() -> None:
             if run_trend_long_entries:
                 for symbol in symbols:
                     if symbol in current_positions:
-                        if verbose:
-                            print("  %s: skip — already_have_position" % symbol)
+                        _log_entry_skip(
+                            dt,
+                            symbol,
+                            "already in positions",
+                            verbose=verbose,
+                            force=False,
+                        )
                         continue
                     if symbol.upper() in open_order_symbols:
-                        if verbose:
-                            print("  %s: skip — open_order_exists" % symbol)
+                        _log_entry_skip(
+                            dt,
+                            symbol,
+                            "open order pending",
+                            verbose=verbose,
+                            force=False,
+                        )
                         continue
                     if symbol.upper() in tracked:
-                        if verbose:
-                            print("  %s: skip — in_tracked_state" % symbol)
+                        _log_entry_skip(
+                            dt,
+                            symbol,
+                            "in tracked state (pending exit/sync)",
+                            verbose=verbose,
+                            force=False,
+                        )
                         continue
                     try:
                         df = broker.get_bars(symbol, timeframe="1Day", limit=220)
                         min_hist = engine.strategy.min_history_bars_for_entry(symbol)
                         need = min_hist if str(symbol).upper() == "SQQQ" else max(200, ma_slow_period)
                         if df.empty or len(df) < need:
-                            if verbose:
-                                print("  %s: skip — not_enough_bars (got %d, need %d)" % (symbol, len(df) if not df.empty else 0, need))
+                            _log_entry_skip(
+                                dt,
+                                symbol,
+                                "not enough bars (got %d, need %d)" % (len(df) if not df.empty else 0, need),
+                                verbose=verbose,
+                                force=False,
+                            )
                             continue
                         close = float(df["close"].iloc[-1])
                         # Trend prefilter: above MAs OR (news sentiment + volume spike) when enabled
@@ -633,8 +901,13 @@ def main() -> None:
                             news_buy = news_rules.should_buy(sentiment_score, vol_ratio)
 
                         if not trend_long_ok and not news_buy:
-                            if verbose:
-                                print("  %s: skip — below_MA and not (positive_news+vol_spike)" % symbol)
+                            _log_entry_skip(
+                                dt,
+                                symbol,
+                                "below MAs (trend prefilter) and no news+volume buy override",
+                                verbose=verbose,
+                                force=False,
+                            )
                             continue
 
                         quote = broker.get_latest_quote(symbol)
@@ -644,13 +917,23 @@ def main() -> None:
                             spread_pct = quote.spread_pct if quote else 0.15
                         spread_cap = engine.market_quality._max_spread_for_symbol(symbol)
                         if spread_pct is not None and spread_pct > spread_cap:
-                            if verbose:
-                                print("  %s: skip — spread_too_high (%.2f%% > %.2f%%)" % (symbol, spread_pct, spread_cap))
+                            _log_entry_skip(
+                                dt,
+                                symbol,
+                                "spread %.3f%% > cap %.3f%%" % (spread_pct, spread_cap),
+                                verbose=verbose,
+                                force=False,
+                            )
                             continue
                         est_buying_power_required = close * 1  # min 1 share
                         if est_buying_power_required > available_cash:
-                            if verbose:
-                                print("  %s: skip — insufficient_buying_power (est $%.0f > $%.0f)" % (symbol, est_buying_power_required, available_cash))
+                            _log_entry_skip(
+                                dt,
+                                symbol,
+                                "insufficient buying power (1 share ~$%.2f > $%.2f)" % (est_buying_power_required, available_cash),
+                                verbose=verbose,
+                                force=False,
+                            )
                             continue
                         atr = _atr(df["high"], df["low"], df["close"], 14)
                         atr_pct = (atr.iloc[-1] / df["close"].iloc[-1]) * 100 if len(atr) else None
@@ -707,24 +990,93 @@ def main() -> None:
                             notional = (decision.position_sizing.notional if decision.position_sizing else 0) or 0
                             buying_power = broker.get_buying_power()
                             if notional > buying_power:
-                                print(dt.strftime("%H:%M ET"), symbol, "skip — insufficient buying power (need $%.0f, have $%.0f)" % (notional, buying_power))
+                                _log_entry_skip(
+                                    dt,
+                                    symbol,
+                                    "insufficient buying power for sized order (need $%.0f, have $%.0f)"
+                                    % (notional, buying_power),
+                                    verbose=verbose,
+                                    force=False,
+                                )
                                 continue
-                            order = broker.submit_order(decision.order_request)
-                            qty_bought = decision.position_sizing.shares if decision.position_sizing else 0
-                            entry_price = float(df["close"].iloc[-1]) if not df.empty else quote.mid
-                            stop_pct = decision.entry_signal.stop_pct if decision.entry_signal else 1.5
-                            add_tracked(tracker_path, symbol, qty_bought, entry_price, stop_pct)
-                            src = (decision.entry_signal.metadata or {}).get("source") if decision.entry_signal else None
-                            if src == "news_sentiment":
-                                print(dt.strftime("%H:%M ET"), symbol, "BUY", qty_bought, "shares (news+vol spike)", getattr(order, "id", ""))
-                            else:
-                                print(dt.strftime("%H:%M ET"), symbol, "BUY", qty_bought, "shares", getattr(order, "id", ""))
-                            current_positions[symbol] = {"notional": notional, "stop_pct": stop_pct}
+                            opts_cfg = config.get("options") or {}
+                            src_meta = (decision.entry_signal.metadata or {}).get("source") if decision.entry_signal else None
+                            route_src = "news_override" if src_meta == "news_sentiment" else "trend_long"
+                            signal_trend = EntryRouteSignal(
+                                underlying=str(symbol).upper(),
+                                direction="bullish",
+                                source=route_src,
+                                stock_symbol=str(symbol).upper(),
+                            )
+                            trend_spot = None
+                            uq_sym = broker.get_latest_quote(str(symbol).upper())
+                            if uq_sym is not None and getattr(uq_sym, "mid", None):
+                                try:
+                                    trend_spot = float(uq_sym.mid)
+                                except (TypeError, ValueError):
+                                    trend_spot = None
+                            options_handled = False
+                            if opts_cfg.get("enabled") and should_use_options(config, signal_trend):
+                                options_handled = route_to_options_executor(
+                                    config,
+                                    signal_trend,
+                                    log_dt=dt,
+                                    verbose=verbose,
+                                    account_equity=account_equity,
+                                    positions=positions,
+                                    broker=broker,
+                                    execution_manager=engine.execution,
+                                    chain_candidates=None,
+                                    underlying_spot=trend_spot,
+                                )
+                            if not options_handled:
+
+                                def _trend_stock_execute() -> None:
+                                    nonlocal current_positions
+                                    order_t = broker.submit_order(decision.order_request)
+                                    qty_bought = decision.position_sizing.shares if decision.position_sizing else 0
+                                    entry_price = float(df["close"].iloc[-1]) if not df.empty else quote.mid
+                                    stop_pct = decision.entry_signal.stop_pct if decision.entry_signal else 1.5
+                                    add_tracked(tracker_path, symbol, qty_bought, entry_price, stop_pct)
+                                    src = (decision.entry_signal.metadata or {}).get("source") if decision.entry_signal else None
+                                    if src == "news_sentiment":
+                                        print(
+                                            dt.strftime("%H:%M ET"),
+                                            symbol,
+                                            "BUY",
+                                            qty_bought,
+                                            "shares (news+vol spike)",
+                                            getattr(order_t, "id", ""),
+                                        )
+                                    else:
+                                        print(
+                                            dt.strftime("%H:%M ET"),
+                                            symbol,
+                                            "BUY",
+                                            qty_bought,
+                                            "shares",
+                                            getattr(order_t, "id", ""),
+                                        )
+                                    current_positions[symbol] = {"notional": notional, "stop_pct": stop_pct}
+
+                                route_to_stock_executor(signal_trend, _trend_stock_execute)
                         else:
-                            if verbose and decision is not None:
-                                print("  %s: %s" % (symbol, decision.reason or "no entry signal"))
+                            if decision is not None:
+                                _log_entry_skip(
+                                    dt,
+                                    symbol,
+                                    decision.reason or "no entry signal",
+                                    verbose=verbose,
+                                    force=False,
+                                )
                     except Exception as e:
-                        print(dt.strftime("%H:%M ET"), symbol, "skip —", type(e).__name__, str(e)[:80])
+                        _log_entry_skip(
+                            dt,
+                            symbol,
+                            "%s: %s" % (type(e).__name__, str(e)[:80]),
+                            verbose=verbose,
+                            force=False,
+                        )
                         continue
 
         elapsed = int(now_sec - last_entry_check_time) // 60 if last_entry_check_time else 0
