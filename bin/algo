@@ -53,8 +53,13 @@ case "$cmd" in
   scheduled)
     exec "$PY" scripts/run_scheduled_alpaca.py "$@"
     ;;
+  dashboard|ui)
+    exec "$PY" -m streamlit run dashboard/app.py "$@"
+    ;;
   help|--help|-h)
     cat <<'EOF'
+AlgoSphere — algorithmic trading (see assets/algosphere-logo.svg)
+
 Usage: ./bin/algo <command> [args passed through to the script]
 
   loop         run_alpaca_loop.py --paper
@@ -72,8 +77,9 @@ Usage: ./bin/algo <command> [args passed through to the script]
   reset        reset_paper.py
   download-data   download_backtest_data.py
   scheduled    run_scheduled_alpaca.py
+  dashboard    Streamlit config UI (localhost)
 
-Or from repo root:  make loop-paper   |   make help
+Or from repo root:  make loop-paper   |   make help   |   make dashboard
 
 Override Python:    PYTHON=python3.12 ./bin/algo loop
 EOF

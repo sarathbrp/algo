@@ -5,9 +5,13 @@ Chain discovery is broker-specific: pass `candidates` from your broker into `sel
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import date
 from typing import Any, Sequence
+
+# US equity OCC: root (1–6 letters) + YYMMDD + C|P + strike in thousandths (8 digits)
+_OCC_OPTION_FULL_RE = re.compile(r"^([A-Z]{1,6})(\d{6})([CP])(\d{8})$")
 
 
 @dataclass(frozen=True)
@@ -91,8 +95,10 @@ def select_option_contract(
     If `candidates` is None or empty, returns (None, reason) — wire broker chain here.
     If `underlying_spot` is None, cannot do ATM — returns (None, reason).
     """
-    if not candidates:
-        return None, "no contract candidates (integrate broker options chain)"
+    if candidates is None:
+        return None, "candidates is None (chain not passed from loop/broker)"
+    if len(candidates) == 0:
+        return None, "candidates is empty (0 rows after broker chain fetch / quote filter)"
 
     u = str(intent_underlying or "").upper()
     want_right = str(intent_right or "").strip().lower()
@@ -111,36 +117,47 @@ def select_option_contract(
         return None, "moneyness %r not supported (v1: ATM only)" % moneyness
 
     if underlying_spot is None or underlying_spot <= 0:
-        return None, "underlying spot price required for ATM selection"
+        return None, "underlying spot missing or non-positive for ATM (underlying_spot=%r)" % (underlying_spot,)
 
     as_of = as_of or date.today()
 
+    def _norm_right(c: OptionContractCandidate) -> str | None:
+        cr = str(c.right or "").strip().lower()
+        if cr in ("calls", "call"):
+            return "call"
+        if cr in ("puts", "put"):
+            return "put"
+        return None
+
     filtered: list[OptionContractCandidate] = []
+    n_chain = len(candidates)
+    n_underlying = 0
+    n_underlying_right = 0
     for c in candidates:
         if _symbol_underlying(c.symbol) != u:
             continue
-        cr = str(c.right or "").strip().lower()
-        if cr in ("calls", "call"):
-            cr = "call"
-        elif cr in ("puts", "put"):
-            cr = "put"
-        else:
+        n_underlying += 1
+        cr = _norm_right(c)
+        if cr is None or cr != want_right:
             continue
-        if cr != want_right:
-            continue
+        n_underlying_right += 1
         dte = _days_to_expiry(c.expiration, as_of)
         if dte < dte_min or dte > dte_max:
             continue
         filtered.append(c)
 
     if not filtered:
-        return None, "no contracts in DTE window [%d, %d] for %s %s" % (dte_min, dte_max, u, want_right)
+        return None, (
+            "no contracts in DTE window [%d, %d] days for %s %s | "
+            "chain_rows=%d rows_matching_underlying=%d rows_matching_underlying_and_%s=%d rows_passing_dte=0"
+            % (dte_min, dte_max, u, want_right, n_chain, n_underlying, want_right, n_underlying_right)
+        )
 
     # ATM: minimize |strike - spot|
     best = min(filtered, key=lambda x: abs(float(x.strike) - float(underlying_spot)))
     mid, sp = _mid_spread(best.bid, best.ask)
     if mid <= 0:
-        return None, "invalid quote for %s" % best.symbol
+        return None, "invalid bid/ask mid for %s (bid=%s ask=%s)" % (best.symbol, best.bid, best.ask)
 
     selected = SelectedOptionContract(
         symbol=str(best.symbol).strip().upper(),
@@ -154,9 +171,9 @@ def select_option_contract(
         open_interest=int(best.open_interest),
         volume=int(best.volume),
     )
-    ok, reason = validate_option_liquidity(selected, config)
+    ok, liq_reason = validate_option_liquidity(selected, config)
     if not ok:
-        return None, reason
+        return None, "liquidity check failed for %s: %s" % (selected.symbol, liq_reason)
     return selected, None
 
 
@@ -167,3 +184,25 @@ def _symbol_underlying(occ_symbol: str) -> str:
         if ch.isdigit():
             return s[:i] if i else s
     return s
+
+
+def parse_occ_equity_option_symbol(occ_symbol: str) -> tuple[str, date, str, float] | None:
+    """
+    Parse a standard US equity OCC option symbol into root, expiry, right, strike.
+
+    Returns (root, expiration, 'call'|'put', strike) or None if the string does not match.
+    """
+    s = str(occ_symbol or "").strip().upper()
+    m = _OCC_OPTION_FULL_RE.match(s)
+    if not m:
+        return None
+    root, yymmdd, cp, strike8 = m.groups()
+    yy, mo, day = int(yymmdd[:2]), int(yymmdd[2:4]), int(yymmdd[4:6])
+    year = 2000 + yy if yy < 70 else 1900 + yy
+    try:
+        exp = date(year, mo, day)
+    except ValueError:
+        return None
+    right = "call" if cp == "C" else "put"
+    strike = int(strike8) / 1000.0
+    return root, exp, right, strike

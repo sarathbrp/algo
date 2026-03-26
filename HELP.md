@@ -1,6 +1,6 @@
-# Algorithmic Trading App — Function Reference
+# AlgoSphere — Function Reference
 
-This file explains each module and its main functions/classes so you can understand how the app works.
+This file explains each module and its main functions/classes so you can understand how the bot works.
 
 ---
 
@@ -233,6 +233,7 @@ Talks to **Alpaca** for account, data, and orders.
 | **`python scripts/show_daily_summary.py [YYYY-MM-DD]`** | Prints that day’s summary: equity, trades (filled orders), open positions. No date = today. |
 | **`python scripts/reset_paper.py [--yes]`** | **Paper only.** Closes all positions, cancels open orders, clears local `data/positions_tracked.json`. Use to restart paper trading. To set balance (e.g. $100k), use Alpaca dashboard → Reset account. |
 | **`python scripts/show_sell_strategy.py`** | For each open position: entry price/date, stop-loss and take-profit levels, time exit (bars held vs exit-after), kill-switch conditions, and unrealized P&L. |
+| **`make dashboard`** / **`pip install -r requirements-dashboard.txt`** then Streamlit | Local **config UI** (`dashboard/app.py`): overview + YAML editor, validate/save with backup. |
 
 ---
 
