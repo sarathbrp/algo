@@ -1,0 +1,7 @@
+# Local-only dashboard — change address only if you understand the risk
+[server]
+address = "127.0.0.1"
+headless = true
+
+[browser]
+gatherUsageStats = false

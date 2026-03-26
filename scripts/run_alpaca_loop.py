@@ -11,7 +11,7 @@ import logging
 import sys
 import time
 from pathlib import Path
-from datetime import datetime
+from datetime import date, datetime, timedelta
 import pytz
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -36,10 +36,34 @@ from src.market_regime import MarketRegimeScorer
 from src.news_sentiment import NewsSentimentPipeline, NewsRuleEngine, volume_spike_ratio
 from src.entry_router import (
     EntryRouteSignal,
+    log_options_stock_path_if_ineligible,
     route_to_options_executor,
     route_to_stock_executor,
     should_use_options,
 )
+
+
+def _option_chain_expiry_bounds(config: dict, as_of: date) -> tuple[date, date]:
+    cs = (config.get("options") or {}).get("contract_selection") or {}
+    dte_min = int(cs.get("expiry_min_days", 14))
+    dte_max = int(cs.get("expiry_max_days", 35))
+    return as_of + timedelta(days=dte_min), as_of + timedelta(days=dte_max)
+
+
+def _option_chain_for_underlying(
+    broker: AlpacaBroker,
+    config: dict,
+    underlying: str,
+    log_dt: datetime,
+) -> list:
+    """Alpaca option chain mapped to selector candidates (empty list on error / no client)."""
+    et = pytz.timezone("America/New_York")
+    as_of = log_dt.astimezone(et).date()
+    lo, hi = _option_chain_expiry_bounds(config, as_of)
+    fn = getattr(broker, "get_option_chain_candidates", None)
+    if fn is None:
+        return []
+    return fn(underlying, expiration_date_gte=lo, expiration_date_lte=hi)
 
 
 def _log_entry_skip(
@@ -89,7 +113,7 @@ def main() -> None:
 
     broker = AlpacaBroker(config)
     mode = "PAPER" if broker.paper else "LIVE (real money)"
-    print("Broker mode:", mode)
+    print("AlgoSphere — broker mode:", mode, flush=True)
     engine = TradingEngine(config=config)
     calendar = MarketCalendar(config)
     regime_scorer = MarketRegimeScorer(config)
@@ -355,6 +379,15 @@ def main() -> None:
             open_orders = broker.get_open_orders()
             open_order_symbols = {o.get("symbol", "").upper() for o in (open_orders or []) if o.get("symbol")}
             available_cash = broker.get_buying_power()
+            opts_enabled = bool((config.get("options") or {}).get("enabled"))
+            if opts_enabled:
+                ou = (config.get("options") or {}).get("allowed_underlyings") or []
+                print(
+                    dt.strftime("%H:%M ET"),
+                    "— options: enabled | chain via Alpaca options API (broker.options_feed); allowed:",
+                    ", ".join(str(x).upper() for x in ou) or "(none)",
+                    flush=True,
+                )
             ma_fast_period = engine.strategy.ma_fast
             ma_slow_period = engine.strategy.ma_slow
 
@@ -590,6 +623,7 @@ def main() -> None:
                                 u_spot = None
                         options_handled = False
                         if opts_cfg.get("enabled") and should_use_options(config, signal_bear):
+                            chain_bear = _option_chain_for_underlying(broker, config, und, dt)
                             options_handled = route_to_options_executor(
                                 config,
                                 signal_bear,
@@ -599,9 +633,11 @@ def main() -> None:
                                 positions=positions,
                                 broker=broker,
                                 execution_manager=engine.execution,
-                                chain_candidates=None,
+                                chain_candidates=chain_bear,
                                 underlying_spot=u_spot,
                             )
+                        elif opts_cfg.get("enabled"):
+                            log_options_stock_path_if_ineligible(config, signal_bear, dt)
                         if not options_handled:
 
                             def _bear_stock_execute() -> None:
@@ -1017,6 +1053,8 @@ def main() -> None:
                                     trend_spot = None
                             options_handled = False
                             if opts_cfg.get("enabled") and should_use_options(config, signal_trend):
+                                sym_u = str(symbol).upper()
+                                chain_trend = _option_chain_for_underlying(broker, config, sym_u, dt)
                                 options_handled = route_to_options_executor(
                                     config,
                                     signal_trend,
@@ -1026,9 +1064,11 @@ def main() -> None:
                                     positions=positions,
                                     broker=broker,
                                     execution_manager=engine.execution,
-                                    chain_candidates=None,
+                                    chain_candidates=chain_trend,
                                     underlying_spot=trend_spot,
                                 )
+                            elif opts_cfg.get("enabled"):
+                                log_options_stock_path_if_ineligible(config, signal_trend, dt)
                             if not options_handled:
 
                                 def _trend_stock_execute() -> None:

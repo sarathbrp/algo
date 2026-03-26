@@ -28,45 +28,49 @@ def adapt_stock_signal_to_option_intent(
     direction: str,
     source: str,
     stock_symbol: str | None = None,
-) -> OptionIntent | None:
+) -> tuple[OptionIntent | None, str | None]:
     """
     Map bullish/bearish stock signal to call/put per config.
 
-    direction: "bullish" → bullish_signal mapping (e.g. call)
-               "bearish" → bearish_signal mapping (e.g. put)
+    Returns (intent, None) on success, or (None, reason) for logs when routing skips.
     """
     opts = config.get("options") or {}
     if not bool(opts.get("enabled")):
-        return None
+        return None, "options.enabled is false"
     mode = str(opts.get("mode") or "").strip().lower()
     if mode != "long_premium_only":
-        return None
+        return None, "options.mode is %r (need long_premium_only)" % (opts.get("mode"),)
 
     d = str(direction or "").strip().lower()
     mapping = opts.get("entry_mapping") or {}
     if d == "bullish":
         leg = str(mapping.get("bullish_signal") or "").strip().lower()
         if leg not in ("call", "calls"):
-            return None
+            return None, "entry_mapping.bullish_signal must be call (got %r)" % mapping.get("bullish_signal")
         right: OptionRight = "call"
     elif d == "bearish":
         leg = str(mapping.get("bearish_signal") or "").strip().lower()
         if leg not in ("put", "puts"):
-            return None
+            return None, "entry_mapping.bearish_signal must be put (got %r)" % mapping.get("bearish_signal")
         right = "put"
     else:
-        return None
+        return None, "direction %r not bullish/bearish" % (direction,)
 
     u = str(underlying or "").strip().upper()
     if not u:
-        return None
+        return None, "empty underlying"
     allowed = {str(x).upper() for x in (opts.get("allowed_underlyings") or [])}
-    if not allowed or u not in allowed:
-        return None
+    if not allowed:
+        return None, "allowed_underlyings is empty"
+    if u not in allowed:
+        return None, "underlying %s not in allowed_underlyings %s" % (u, ",".join(sorted(allowed)))
 
-    return OptionIntent(
-        underlying=u,
-        right=right,
-        source=str(source or ""),
-        stock_symbol=str(stock_symbol).upper() if stock_symbol else None,
+    return (
+        OptionIntent(
+            underlying=u,
+            right=right,
+            source=str(source or ""),
+            stock_symbol=str(stock_symbol).upper() if stock_symbol else None,
+        ),
+        None,
     )

@@ -1,6 +1,10 @@
-# Algorithmic Trading App
+# AlgoSphere
 
-A rule-based algorithmic trading application that enforces **universe & data**, **entry/exit**, **position sizing**, **portfolio & drawdown**, **execution**, and **compliance** rules before any trade.
+<p align="center">
+  <img src="assets/algosphere-logo.svg" width="120" height="120" alt="AlgoSphere logo — sphere with orbit and signal curve"/>
+</p>
+
+**AlgoSphere** is a rule-based algorithmic trading application that enforces **universe & data**, **entry/exit**, **position sizing**, **portfolio & drawdown**, **execution**, and **compliance** rules before any trade.
 
 The structure is inspired by [QuantConnect Lean](https://github.com/QuantConnect/Lean): **Algorithm** (with `Initialize` / `OnEndOfDay`), **Engine** (backtest/live), **Data** (CSV or Alpaca), and a **CLI** (`lean backtest`, `lean live`).
 
@@ -29,6 +33,10 @@ The structure is inspired by [QuantConnect Lean](https://github.com/QuantConnect
 - **`broker.paper`** in YAML defaults to **`true`**. CLI **`--live`** sets paper to **`false`** and **`--paper`** forces paper.
 - **`scripts/run_alpaca_loop.py`**: With **`--live`**, **`news_sentiment.enabled` is forced to `false`** in memory (NewsAPI/FinBERT off for real-money runs). On **paper**, news follows YAML (`news_sentiment.enabled`, default **`false`**).
 - **`lean live`** delegates to `run_alpaca_loop.py` with **`--paper`** (default) or **`--live`**.
+
+### Config dashboard (optional)
+- Install UI deps: **`pip install -r requirements-dashboard.txt`**
+- Run: **`make dashboard`** or **`./bin/algo dashboard`** — Streamlit opens **http://127.0.0.1:8501** (local only; see `.streamlit/config.toml`). **Overview** shows key settings; **Edit YAML** validates and can **save** with a timestamped **`.bak.*`** next to the file.
 
 ### News + FinBERT (optional)
 - **Off by default** (`news_sentiment.enabled: false`). When enabled **and not** using `--live`, the loop can use NewsAPI + FinBERT (see `src/news_sentiment/`, `requirements-news.txt`).

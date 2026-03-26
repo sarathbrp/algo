@@ -33,7 +33,22 @@ except ImportError:
     ALPACA_AVAILABLE = False
     DataFeed = None
 
+ALPACA_OPTIONS_CHAIN = False
+OptionHistoricalDataClient = None
+OptionChainRequest = None
+OptionsFeed = None
+if ALPACA_AVAILABLE:
+    try:
+        from alpaca.data.historical.option import OptionHistoricalDataClient
+        from alpaca.data.requests import OptionChainRequest
+        from alpaca.data.enums import OptionsFeed
+
+        ALPACA_OPTIONS_CHAIN = True
+    except ImportError:
+        pass
+
 from ..execution import OrderRequest, OrderType
+from ..options_selector import OptionContractCandidate, parse_occ_equity_option_symbol
 
 
 @dataclass
@@ -93,6 +108,12 @@ class AlpacaBroker:
         self._feed_enum = getattr(DataFeed, feed_name, DataFeed.IEX) if ALPACA_AVAILABLE else None
         self._retry_times = int(broker_cfg.get("api_retry_times", 3))
         self._retry_delay_sec = float(broker_cfg.get("api_retry_delay_sec", 3.0))
+        self._option_data: Any = None
+        self._options_feed: Any = None
+        if ALPACA_OPTIONS_CHAIN and OptionHistoricalDataClient is not None and OptionsFeed is not None:
+            self._option_data = OptionHistoricalDataClient(api_key, secret)
+            opt_feed_name = (broker_cfg.get("options_feed") or "indicative").strip().lower()
+            self._options_feed = getattr(OptionsFeed, opt_feed_name.upper(), OptionsFeed.INDICATIVE)
 
     def _with_retry(self, fn: Callable[[], T]) -> T:
         """Retry on connection errors (e.g. Remote end closed connection without response)."""
@@ -271,6 +292,81 @@ class AlpacaBroker:
         if hasattr(q, "timestamp") and q.timestamp is not None:
             ts = q.timestamp if isinstance(q.timestamp, datetime) else datetime.fromisoformat(str(q.timestamp).replace("Z", "+00:00"))
         return QuoteInfo(bid=bid, ask=ask, mid=mid, spread_pct=spread_pct, timestamp=ts)
+
+    def get_option_chain_candidates(
+        self,
+        underlying: str,
+        *,
+        expiration_date_gte: date,
+        expiration_date_lte: date,
+    ) -> list[OptionContractCandidate]:
+        """
+        Option chain snapshots from Alpaca Market Data, mapped for `select_option_contract`.
+
+        Requires options market data access (see broker.options_feed: indicative vs opra).
+        Open interest is not in the snapshot model; set to 0 (use min_open_interest: 0 or rely on volume).
+        """
+        if self._option_data is None or OptionChainRequest is None:
+            return []
+        und = str(underlying or "").strip().upper()
+        if not und:
+            return []
+
+        def _fetch() -> dict[str, Any]:
+            req = OptionChainRequest(
+                underlying_symbol=und,
+                feed=self._options_feed,
+                expiration_date_gte=expiration_date_gte,
+                expiration_date_lte=expiration_date_lte,
+            )
+            return self._option_data.get_option_chain(req)
+
+        try:
+            chain = self._with_retry(_fetch)
+        except Exception as e:
+            print(
+                datetime.now().strftime("%H:%M"),
+                "option chain",
+                und,
+                type(e).__name__,
+                str(e)[:120],
+                flush=True,
+            )
+            return []
+
+        if not chain:
+            return []
+
+        out: list[OptionContractCandidate] = []
+        for sym, snap in chain.items():
+            parsed = parse_occ_equity_option_symbol(sym)
+            if parsed is None:
+                continue
+            root, exp, right, strike = parsed
+            if root != und:
+                continue
+            lq = getattr(snap, "latest_quote", None)
+            if lq is None:
+                continue
+            bid = float(getattr(lq, "bid_price", 0) or 0)
+            ask = float(getattr(lq, "ask_price", 0) or 0)
+            if bid <= 0 or ask <= 0:
+                continue
+            lt = getattr(snap, "latest_trade", None)
+            vol = int(float(getattr(lt, "size", 0) or 0)) if lt is not None else 0
+            out.append(
+                OptionContractCandidate(
+                    symbol=str(sym).strip().upper(),
+                    strike=strike,
+                    expiration=exp,
+                    right=right,
+                    open_interest=0,
+                    volume=vol,
+                    bid=bid,
+                    ask=ask,
+                )
+            )
+        return out
 
     def submit_order(self, order: OrderRequest) -> Any:
         """Submit order to Alpaca. Returns Alpaca order object."""

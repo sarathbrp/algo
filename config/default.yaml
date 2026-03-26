@@ -414,6 +414,7 @@ broker:
   # api_retry_times: 3
   # api_retry_delay_sec: 3.0
   # data_feed: iex   # free. Use "sip" only if you have a paid data subscription.
+  # options_feed: indicative   # Alpaca option chain: "indicative" (default) or "opra" (paid subscription)
   # API keys from environment (never put real keys in this file):
   #   Paper: APCA_API_KEY_ID, APCA_API_SECRET_KEY  (from Alpaca Paper Trading → API Keys)
   #   Live:  ALPACA_LIVE_API_KEY_ID, ALPACA_LIVE_API_SECRET_KEY  (from Alpaca Live → API Keys; Alpaca uses separate keys for live)
