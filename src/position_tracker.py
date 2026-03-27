@@ -46,6 +46,7 @@ def add(
         "partial_taken": partial_taken,
         "trail_high": float(trail_high) if trail_high is not None else None,
         "side": (side or "long").strip().lower(),
+        "last_buy_price": float(entry_price),
     }
     save(data, base_path)
 
@@ -56,6 +57,8 @@ def merge_add_shares(
     add_qty: int,
     fill_price: float,
     stop_pct: float | None = None,
+    *,
+    extras: dict[str, Any] | None = None,
 ) -> None:
     """Increase qty for an open position; weight-average entry_price. If not tracked, same as add()."""
     if add_qty <= 0:
@@ -64,6 +67,12 @@ def merge_add_shares(
     key = symbol.upper()
     if key not in data:
         add(base_path, symbol, add_qty, fill_price, stop_pct if stop_pct is not None else 2.0)
+        if extras:
+            data = load(base_path)
+            if key in data:
+                for ek, ev in extras.items():
+                    data[key][ek] = ev
+                save(data, base_path)
         return
     old = data[key]
     oq = int(old.get("qty", 0))
@@ -77,8 +86,12 @@ def merge_add_shares(
         new_e = fill_price
     data[key]["qty"] = new_q
     data[key]["entry_price"] = new_e
+    data[key]["last_buy_price"] = float(fill_price)
     if stop_pct is not None:
         data[key]["stop_pct"] = stop_pct
+    if extras:
+        for ek, ev in extras.items():
+            data[key][ek] = ev
     save(data, base_path)
 
 
@@ -142,3 +155,37 @@ def minutes_held(entry_time_iso: str, now: datetime | None = None) -> float:
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
     return max(0.0, (now - t).total_seconds() / 60.0)
+
+
+def minutes_since_iso(ts: str | None, now_dt: datetime) -> float | None:
+    """
+    Minutes from an ISO timestamp string to ``now_dt``.
+
+    If ``ts`` has a timezone, it is converted to ``now_dt``'s zone (if any) before
+    subtracting as naive datetimes, matching wall-clock comparison in the loop.
+    Returns None if ``ts`` is missing or unparseable.
+    """
+    if not ts:
+        return None
+    try:
+        t = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        if t.tzinfo is not None:
+            if now_dt.tzinfo is not None:
+                t = t.astimezone(now_dt.tzinfo).replace(tzinfo=None)
+            else:
+                t = t.replace(tzinfo=None)
+            n = now_dt.replace(tzinfo=None)
+        else:
+            n = now_dt.replace(tzinfo=None)
+        return (n - t).total_seconds() / 60.0
+    except Exception:
+        return None
+
+
+def get_tracked_entry_info(tracker_path: Path | str | None, symbol: str) -> dict[str, Any]:
+    """Return one symbol's row from the tracker file, or {} if missing / invalid."""
+    path = Path(tracker_path) if tracker_path is not None else _default_path()
+    data = load(path)
+    key = str(symbol).upper()
+    row = data.get(key) or data.get(symbol) or {}
+    return row if isinstance(row, dict) else {}

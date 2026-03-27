@@ -30,6 +30,8 @@ from src.position_tracker import (
     update as update_tracked,
     bars_held,
     minutes_held as holding_minutes,
+    minutes_since_iso,
+    get_tracked_entry_info,
 )
 from src.strategy import ExitReason, EntrySignal
 from src.market_regime import MarketRegimeScorer
@@ -667,37 +669,87 @@ def main() -> None:
                         )
                         continue
 
-                # SQQQ: optional small add when already long, QQQ well below 50D MA, room under inverse cap
-                sqqq_add_cfg = bear_etfs_cfg.get("sqqq_add_on_strong_trend") or {}
-                sqqq_sym = "SQQQ"
-                if bool(sqqq_add_cfg.get("enabled", False)) and "SQQQ" in bear_etf_universe_set:
-                    min_dist = float(sqqq_add_cfg.get("reference_ma_distance_pct_min", 1.5))
-                    size_mult = float(sqqq_add_cfg.get("size_multiplier", 0.35))
-                    if qqq_price is None or qqq_ma50 is None or qqq_ma50 <= 0:
+                # SQQQ controlled scaling (QQQ vs 50D MA only; step index + scale_count)
+                scaling_cfg = bear_etfs_cfg.get("controlled_scaling") or {}
+                sqqq_sym = str(scaling_cfg.get("symbol") or "SQQQ").upper()
+
+                if bool(scaling_cfg.get("enabled", False)) and sqqq_sym in bear_etf_universe_set:
+                    ref_sym_cfg = str(scaling_cfg.get("reference_symbol") or "QQQ").upper()
+                    ref_ma_cfg = int(scaling_cfg.get("ma_period") or 50)
+                    cooldown_minutes = int(scaling_cfg.get("cooldown_minutes") or 10)
+                    require_price_above_last_entry = bool(
+                        scaling_cfg.get("require_price_above_last_entry", True)
+                    )
+                    steps = list(scaling_cfg.get("steps") or [])
+
+                    if (
+                        qqq_price is None
+                        or qqq_ma50 is None
+                        or qqq_ma50 <= 0
+                        or ref_sym_cfg != "QQQ"
+                        or ref_ma_cfg != 50
+                    ):
                         _log_entry_skip(
                             dt,
                             sqqq_sym,
-                            "add skipped — QQQ vs 50D MA data missing",
+                            "scaling skipped — QQQ/50D reference unavailable",
                             verbose=verbose,
                             force=True,
                         )
                     else:
                         dist_pct = (qqq_ma50 - qqq_price) / qqq_ma50 * 100.0
-                        trend_strong = dist_pct >= min_dist
-                        sqqq_in_pos = sqqq_sym in current_positions
-                        if not trend_strong:
+                        active_step_idx = -1
+                        for i, step in enumerate(steps):
+                            if not isinstance(step, dict):
+                                continue
+                            trig = float(step.get("reference_ma_distance_pct_min") or 0.0)
+                            if dist_pct >= trig:
+                                active_step_idx = i
+
+                        tracked_row = get_tracked_entry_info(tracker_path, sqqq_sym)
+                        scale_count = int(
+                            (tracked_row.get("scale_count") or 1)
+                            if sqqq_sym in current_positions
+                            else 0
+                        )
+                        last_entry_price = tracked_row.get("last_entry_price")
+                        last_scale_ts = tracked_row.get("last_scale_ts")
+
+                        mins_since_last = minutes_since_iso(
+                            str(last_scale_ts) if last_scale_ts else None, dt
+                        )
+                        cooldown_ok = mins_since_last is None or mins_since_last >= cooldown_minutes
+
+                        if sqqq_sym not in current_positions:
                             _log_entry_skip(
                                 dt,
                                 sqqq_sym,
-                                "add skipped — QQQ only %.2f%% below MA50 (need >= %.2f%%)" % (dist_pct, min_dist),
+                                "scaling skipped — no existing SQQQ position",
                                 verbose=verbose,
                                 force=True,
                             )
-                        elif not sqqq_in_pos:
+                        elif active_step_idx < 0:
                             _log_entry_skip(
                                 dt,
                                 sqqq_sym,
-                                "add skipped — no existing SQQQ position",
+                                "scaling skipped — QQQ only %.2f%% below MA50" % dist_pct,
+                                verbose=verbose,
+                                force=True,
+                            )
+                        elif scale_count >= len(steps):
+                            _log_entry_skip(
+                                dt,
+                                sqqq_sym,
+                                "scaling skipped — already at max scale steps (%d)" % len(steps),
+                                verbose=verbose,
+                                force=True,
+                            )
+                        elif scale_count > active_step_idx:
+                            _log_entry_skip(
+                                dt,
+                                sqqq_sym,
+                                "scaling skipped — current scale_count %d already matches trend step %d"
+                                % (scale_count, active_step_idx + 1),
                                 verbose=verbose,
                                 force=True,
                             )
@@ -705,7 +757,7 @@ def main() -> None:
                             _log_entry_skip(
                                 dt,
                                 sqqq_sym,
-                                "add skipped — open order pending",
+                                "scaling skipped — open order pending",
                                 verbose=verbose,
                                 force=True,
                             )
@@ -713,136 +765,170 @@ def main() -> None:
                             _log_entry_skip(
                                 dt,
                                 sqqq_sym,
-                                "add skipped — inverse exposure at cap (~$%.0f)" % max_bear_etf_notional,
+                                "scaling skipped — inverse exposure at cap (~$%.0f)"
+                                % max_bear_etf_notional,
                                 verbose=verbose,
                                 force=True,
                             )
-                        elif (
-                            trend_strong
-                            and sqqq_in_pos
-                            and sqqq_sym not in open_order_symbols
-                            and current_bear_etf_notional < max_bear_etf_notional - 1e-6
-                        ):
+                        elif not cooldown_ok:
+                            _log_entry_skip(
+                                dt,
+                                sqqq_sym,
+                                "scaling skipped — cooldown %.1f/%d min"
+                                % (mins_since_last or 0.0, cooldown_minutes),
+                                verbose=verbose,
+                                force=True,
+                            )
+                        else:
                             try:
                                 df_s = broker.get_bars(sqqq_sym, timeframe="1Day", limit=60)
                                 if df_s.empty or len(df_s) < 20:
                                     _log_entry_skip(
                                         dt,
                                         sqqq_sym,
-                                        "add skipped — not enough daily bars (got %d)"
-                                        % (0 if df_s.empty else len(df_s)),
+                                        "scaling skipped — not enough daily bars",
                                         verbose=verbose,
                                         force=True,
                                     )
                                 else:
                                     close_s = float(df_s["close"].iloc[-1])
-                                    quote_s = broker.get_latest_quote(sqqq_sym)
-                                    if quote_s and getattr(quote_s, "is_stale", None) and quote_s.is_stale(stale_quote_max_age):
-                                        spread_pct_s = 0.15
-                                    else:
-                                        spread_pct_s = quote_s.spread_pct if quote_s else 0.15
-                                    spread_cap_s = engine.market_quality._max_spread_for_symbol(sqqq_sym)
-                                    if spread_pct_s is not None and spread_pct_s > spread_cap_s:
+
+                                    if (
+                                        require_price_above_last_entry
+                                        and last_entry_price is not None
+                                        and close_s <= float(last_entry_price)
+                                    ):
                                         _log_entry_skip(
                                             dt,
                                             sqqq_sym,
-                                            "add skipped — spread %.3f%% > cap %.3f%%"
-                                            % (spread_pct_s, spread_cap_s),
+                                            "scaling skipped — SQQQ %.2f <= last entry %.2f"
+                                            % (close_s, float(last_entry_price)),
                                             verbose=verbose,
                                             force=True,
                                         )
                                     else:
-                                        sizing_s = engine.sizer.size_position(
-                                            account_equity,
-                                            close_s,
-                                            bear_etf_stop_pct,
-                                            sqqq_sym,
-                                            current_positions,
-                                            sector_exposure_pct,
-                                            symbol_sector=None,
-                                            regime_size_multiplier=bear_inv_regime_mult,
-                                        )
-                                        if not sizing_s or sizing_s.shares <= 0:
-                                            rr = getattr(sizing_s, "reject_reason", None) if sizing_s else None
+                                        quote_s = broker.get_latest_quote(sqqq_sym)
+                                        if quote_s and getattr(quote_s, "is_stale", None) and quote_s.is_stale(stale_quote_max_age):
+                                            spread_pct_s = 0.15
+                                        else:
+                                            spread_pct_s = quote_s.spread_pct if quote_s else 0.15
+
+                                        spread_cap_s = engine.market_quality._max_spread_for_symbol(sqqq_sym)
+                                        if spread_pct_s is not None and spread_pct_s > spread_cap_s:
                                             _log_entry_skip(
                                                 dt,
                                                 sqqq_sym,
-                                                "add skipped — sizing rejected (%s)"
-                                                % (rr or "zero shares"),
+                                                "scaling skipped — spread %.3f%% > cap %.3f%%"
+                                                % (spread_pct_s, spread_cap_s),
                                                 verbose=verbose,
                                                 force=True,
                                             )
                                         else:
-                                            add_sh = max(1, int(sizing_s.shares * size_mult))
-                                            add_notional = add_sh * close_s
-                                            room = max_bear_etf_notional - current_bear_etf_notional
-                                            if add_notional > room and close_s > 0:
-                                                add_sh = max(0, int(room / close_s))
-                                                add_notional = add_sh * close_s
-                                            buying_power_s = broker.get_buying_power()
-                                            if add_sh <= 0:
+                                            sizing_s = engine.sizer.size_position(
+                                                account_equity,
+                                                close_s,
+                                                bear_etf_stop_pct,
+                                                sqqq_sym,
+                                                current_positions,
+                                                sector_exposure_pct,
+                                                symbol_sector=None,
+                                                regime_size_multiplier=bear_inv_regime_mult,
+                                            )
+
+                                            if not sizing_s or sizing_s.shares <= 0:
+                                                rr = getattr(sizing_s, "reject_reason", None) if sizing_s else None
                                                 _log_entry_skip(
                                                     dt,
                                                     sqqq_sym,
-                                                    "add skipped — clipped to 0 shares (room $%.0f)" % room,
-                                                    verbose=verbose,
-                                                    force=True,
-                                                )
-                                            elif add_notional > buying_power_s:
-                                                _log_entry_skip(
-                                                    dt,
-                                                    sqqq_sym,
-                                                    "add skipped — buying power (need $%.0f, have $%.0f)"
-                                                    % (add_notional, buying_power_s),
+                                                    "scaling skipped — sizing rejected (%s)" % (rr or "zero shares"),
                                                     verbose=verbose,
                                                     force=True,
                                                 )
                                             else:
-                                                buy_order_s = engine.execution.build_order(
-                                                    sqqq_sym,
-                                                    "buy",
-                                                    add_sh,
-                                                    quote_s.mid if quote_s else close_s,
-                                                    spread_pct_s or 0.15,
-                                                )
-                                                if not buy_order_s:
+                                                step_cfg = steps[scale_count]
+                                                size_mult = float(step_cfg.get("size_multiplier") or 0.0)
+                                                add_sh = max(1, int(sizing_s.shares * size_mult))
+                                                add_notional = add_sh * close_s
+                                                room = max_bear_etf_notional - current_bear_etf_notional
+
+                                                if add_notional > room and close_s > 0:
+                                                    add_sh = max(0, int(room / close_s))
+                                                    add_notional = add_sh * close_s
+
+                                                buying_power_s = broker.get_buying_power()
+
+                                                if add_sh <= 0:
                                                     _log_entry_skip(
                                                         dt,
                                                         sqqq_sym,
-                                                        "add skipped — could not build order",
+                                                        "scaling skipped — clipped to 0 shares (room $%.0f)" % room,
+                                                        verbose=verbose,
+                                                        force=True,
+                                                    )
+                                                elif add_notional > buying_power_s:
+                                                    _log_entry_skip(
+                                                        dt,
+                                                        sqqq_sym,
+                                                        "scaling skipped — buying power (need $%.0f, have $%.0f)"
+                                                        % (add_notional, buying_power_s),
                                                         verbose=verbose,
                                                         force=True,
                                                     )
                                                 else:
-                                                    broker.submit_order(buy_order_s)
-                                                    current_bear_etf_notional += add_notional
-                                                    prev = current_positions.get(sqqq_sym, {})
-                                                    merge_add_tracked(
-                                                        tracker_path,
+                                                    buy_order_s = engine.execution.build_order(
                                                         sqqq_sym,
+                                                        "buy",
                                                         add_sh,
-                                                        close_s,
-                                                        bear_etf_stop_pct,
+                                                        quote_s.mid if quote_s else close_s,
+                                                        spread_pct_s or 0.15,
                                                     )
-                                                    current_positions[sqqq_sym] = {
-                                                        "notional": float(prev.get("notional", 0)) + add_notional,
-                                                        "stop_pct": bear_etf_stop_pct,
-                                                    }
-                                                    print(
-                                                        dt.strftime("%H:%M ET"),
-                                                        sqqq_sym,
-                                                        "BUY (add, strong ref trend %.1f%% below MA)" % dist_pct,
-                                                        add_sh,
-                                                        "shares",
-                                                    )
+                                                    if not buy_order_s:
+                                                        _log_entry_skip(
+                                                            dt,
+                                                            sqqq_sym,
+                                                            "scaling skipped — could not build order",
+                                                            verbose=verbose,
+                                                            force=True,
+                                                        )
+                                                    else:
+                                                        broker.submit_order(buy_order_s)
+                                                        current_bear_etf_notional += add_notional
+
+                                                        prev = current_positions.get(sqqq_sym, {})
+                                                        merge_add_tracked(
+                                                            tracker_path,
+                                                            sqqq_sym,
+                                                            add_sh,
+                                                            close_s,
+                                                            bear_etf_stop_pct,
+                                                            extras={
+                                                                "scale_count": scale_count + 1,
+                                                                "last_entry_price": close_s,
+                                                                "last_scale_ts": dt.isoformat(),
+                                                            },
+                                                        )
+                                                        current_positions[sqqq_sym] = {
+                                                            "notional": float(prev.get("notional", 0)) + add_notional,
+                                                            "stop_pct": bear_etf_stop_pct,
+                                                        }
+
+                                                        print(
+                                                            dt.strftime("%H:%M ET"),
+                                                            sqqq_sym,
+                                                            "BUY (scale step %d/%d, QQQ %.2f%% below MA50)"
+                                                            % (scale_count + 1, len(steps), dist_pct),
+                                                            add_sh,
+                                                            "shares",
+                                                        )
                             except Exception as e:
                                 _log_entry_skip(
                                     dt,
                                     sqqq_sym,
-                                    "add skipped — %s: %s" % (type(e).__name__, str(e)[:60]),
+                                    "scaling skipped — %s: %s" % (type(e).__name__, str(e)[:60]),
                                     verbose=verbose,
                                     force=True,
                                 )
+
 
             universe_cfg = config.get("universe", {})
             bearish_allow_longs = bool(universe_cfg.get("bearish_allow_trend_long_entries", False))

@@ -34,24 +34,44 @@ universe:
   paused_symbols: []   # add tickers here to exclude from scan/trade
   # Regime filter: when < 30% above 50D MA = bearish → skip long entries; bear ETFs if breakdown
   regime_min_pct_above_50d_ma: 0.30
-  # Inverse ETFs: at most ONE position; total notional cap (see max_exposure_pct_equity).
+  # Inverse ETFs: max_positions = max distinct bear tickers held; total notional cap (max_exposure_pct_equity).
   bear_etfs:
     symbols:
       - SQQQ
       - SPXS
+
     breakdown:
       reference_symbol: QQQ
       ma_period: 50
-    # When breakdown reference is QQQ, only consider SQQQ (3x Nasdaq hedge). Other refs use full symbols list.
+
     prefer_sqqq_when_breakdown_reference_is_qqq: true
-    max_positions: 1          # only one inverse ETF at a time
-    max_exposure_pct_equity: 30   # cap total inverse ETF notional at 30% of equity
+
+    max_positions: 3
+    max_exposure_pct_equity: 30
     stop_pct: 2.0
-    # Pyramid SQQQ only: if already long SQQQ, bearish+breakdown, and reference (e.g. QQQ) is >= N% below breakdown MA
+
+    controlled_scaling:
+      enabled: true
+      symbol: SQQQ
+      reference_symbol: QQQ
+      ma_period: 50
+      cooldown_minutes: 10
+
+      steps:
+        - reference_ma_distance_pct_min: 1.0
+          size_multiplier: 0.40
+        - reference_ma_distance_pct_min: 2.5
+          size_multiplier: 0.30
+        - reference_ma_distance_pct_min: 4.0
+          size_multiplier: 0.30
+
+      require_price_above_last_entry: true
+
+    # Legacy YAML only — run_alpaca_loop does not read this (use controlled_scaling).
     sqqq_add_on_strong_trend:
       enabled: false
-      reference_ma_distance_pct_min: 1.5   # "strong" when (MA - close) / MA * 100 >= this
-      size_multiplier: 0.35                 # each add uses this fraction of normal inverse size (still capped by max_exposure_pct_equity)
+      reference_ma_distance_pct_min: 1.5
+      size_multiplier: 0.35
   # Bearish regime: by default no new trend longs. Optionally allow some, capped:
   bearish_allow_trend_long_entries: false   # true = still run entry scan when bearish (subject to max below)
   bearish_max_normal_long_positions: null    # e.g. 4 — max non-inverse long positions when bearish (null = no cap)
