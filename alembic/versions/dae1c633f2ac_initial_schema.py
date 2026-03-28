@@ -91,7 +91,7 @@ def upgrade() -> None:
     sa.Column('qqq_score', sa.Numeric(precision=6, scale=4), nullable=True),
     sa.Column('vix', sa.Numeric(precision=8, scale=2), nullable=True),
     sa.Column('logged_at', sa.DateTime(timezone=True), nullable=False),
-    sa.Column('state_vector', src.db.vector_type.TiDBVector(), nullable=True),
+    sa.Column('state_vector', sa.Text(), nullable=True),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id')
     )
@@ -111,7 +111,7 @@ def upgrade() -> None:
     sa.Column('exit_reason', sa.String(length=64), nullable=True),
     sa.Column('entered_at', sa.DateTime(timezone=True), nullable=True),
     sa.Column('exited_at', sa.DateTime(timezone=True), nullable=True),
-    sa.Column('setup_vector', src.db.vector_type.TiDBVector(), nullable=True),
+    sa.Column('setup_vector', sa.Text(), nullable=True),
     sa.ForeignKeyConstraint(['user_id'], ['users.id'], ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id')
     )

@@ -1,0 +1,35 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+.venv
+venv
+*.egg-info
+
+# Node
+node_modules
+
+# Build artifacts
+frontend/dist
+frontend/.vite
+
+# Runtime data
+data/
+
+# IDE
+.vscode
+.idea
+*.swp
+
+# Docker
+.dockerignore
+docker-compose.yml
+
+# Misc
+.env
+*.md
+.claude/

@@ -9,8 +9,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.api.routers import admin, auth, users
 from src.db import Base, engine
 
-# Create tables on startup if they don't exist (dev convenience; use Alembic in prod)
-Base.metadata.create_all(engine)
+# Create tables on startup for SQLite only (dev convenience).
+# For TiDB/MySQL, Alembic manages the schema — see docker/entrypoint-api.sh.
+if str(engine.url).startswith("sqlite"):
+    Base.metadata.create_all(engine)
 
 app = FastAPI(
     title="AlgoSphere API",
