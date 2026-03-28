@@ -2,9 +2,14 @@
 Alpaca broker integration: account, bars, quotes (spread), order submission.
 
 Uses alpaca-py (TradingClient + StockHistoricalDataClient).
-Credentials from environment: APCA_API_KEY_ID, APCA_API_SECRET_KEY.
-Paper vs live via config broker.paper or APCA_API_BASE_URL.
-Retries on connection errors (RemoteDisconnected, ConnectionError) so the loop doesn't crash.
+
+Credentials can be supplied in two ways (checked in order):
+  1. Explicit ``api_key`` / ``secret`` / ``paper`` arguments (multi-user mode).
+  2. Environment variables: APCA_API_KEY_ID, APCA_API_SECRET_KEY (paper) or
+     ALPACA_LIVE_API_KEY_ID, ALPACA_LIVE_API_SECRET_KEY (live).
+
+Retries on connection errors (RemoteDisconnected, ConnectionError) so the loop
+doesn't crash.
 """
 import time
 from dataclasses import dataclass
@@ -74,35 +79,56 @@ class QuoteInfo:
 class AlpacaBroker:
     """Alpaca broker: account, historical bars, latest quote, order submission."""
 
-    def __init__(self, config: dict[str, Any] | None = None):
+    def __init__(
+        self,
+        config: dict[str, Any] | None = None,
+        *,
+        api_key: str | None = None,
+        secret: str | None = None,
+        paper: bool | None = None,
+    ):
         if not ALPACA_AVAILABLE:
             raise RuntimeError("alpaca-py is required for Alpaca broker. Install: pip install alpaca-py")
         self.config = config or {}
         broker_cfg = self.config.get("broker", {})
-        # Paper vs live: config default, overridable by env APCA_PAPER or ALPACA_LIVE
-        paper_cfg = broker_cfg.get("paper", True)
-        apca_paper = _env("APCA_PAPER")
-        alpaca_live = _env("ALPACA_LIVE")
-        if apca_paper is not None:
-            self.paper = str(apca_paper).strip().lower() in ("true", "1", "yes")
-        elif alpaca_live is not None:
-            self.paper = not (str(alpaca_live).strip().lower() in ("true", "1", "yes"))
+
+        # --- Resolve paper vs live -----------------------------------------
+        if paper is not None:
+            # Explicit argument takes priority (multi-user mode).
+            self.paper = paper
         else:
-            self.paper = paper_cfg
-        # Live and paper use different Alpaca API keys. For live, prefer ALPACA_LIVE_* if set.
-        if self.paper:
-            api_key = _env("APCA_API_KEY_ID") or broker_cfg.get("api_key")
-            secret = _env("APCA_API_SECRET_KEY") or broker_cfg.get("secret_key")
+            # Legacy: config → env overrides
+            paper_cfg = broker_cfg.get("paper", True)
+            apca_paper = _env("APCA_PAPER")
+            alpaca_live = _env("ALPACA_LIVE")
+            if apca_paper is not None:
+                self.paper = str(apca_paper).strip().lower() in ("true", "1", "yes")
+            elif alpaca_live is not None:
+                self.paper = not (str(alpaca_live).strip().lower() in ("true", "1", "yes"))
+            else:
+                self.paper = paper_cfg
+
+        # --- Resolve credentials -------------------------------------------
+        if api_key is not None and secret is not None:
+            # Explicit credentials (multi-user mode) — use directly.
+            resolved_key = api_key
+            resolved_secret = secret
         else:
-            api_key = _env("ALPACA_LIVE_API_KEY_ID") or _env("APCA_API_KEY_ID") or broker_cfg.get("api_key")
-            secret = _env("ALPACA_LIVE_API_SECRET_KEY") or _env("APCA_API_SECRET_KEY") or broker_cfg.get("secret_key")
-        if not api_key or not secret:
+            # Legacy: read from environment / config.
+            if self.paper:
+                resolved_key = _env("APCA_API_KEY_ID") or broker_cfg.get("api_key")
+                resolved_secret = _env("APCA_API_SECRET_KEY") or broker_cfg.get("secret_key")
+            else:
+                resolved_key = _env("ALPACA_LIVE_API_KEY_ID") or _env("APCA_API_KEY_ID") or broker_cfg.get("api_key")
+                resolved_secret = _env("ALPACA_LIVE_API_SECRET_KEY") or _env("APCA_API_SECRET_KEY") or broker_cfg.get("secret_key")
+        if not resolved_key or not resolved_secret:
             raise ValueError(
                 "Alpaca credentials required. Set APCA_API_KEY_ID and APCA_API_SECRET_KEY (paper). "
                 "For live, set ALPACA_LIVE_API_KEY_ID and ALPACA_LIVE_API_SECRET_KEY (Alpaca uses separate keys for live)."
             )
-        self._trading = TradingClient(api_key, secret, paper=self.paper)
-        self._data = StockHistoricalDataClient(api_key, secret)
+
+        self._trading = TradingClient(resolved_key, resolved_secret, paper=self.paper)
+        self._data = StockHistoricalDataClient(resolved_key, resolved_secret)
         # IEX is free; SIP requires paid subscription ("subscription does not permit querying recent SIP data")
         feed_name = (broker_cfg.get("data_feed") or "iex").strip().upper()
         self._feed_enum = getattr(DataFeed, feed_name, DataFeed.IEX) if ALPACA_AVAILABLE else None

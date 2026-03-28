@@ -4,7 +4,13 @@ Run the trading engine in a loop until market close (no user interaction).
 
 Checks for entry signals every N minutes during regular session; stops when
 market closes or daily loss limit / safe mode is hit.
-CLI: --live or --paper to override config.
+
+Multi-user support: when ``config/users.yaml`` exists, iterates over all
+configured users each cycle.  Each user has their own broker, engine,
+tracker, and risk state.  Errors in one user never crash others.
+
+CLI: --live or --paper to override config (single-user only).
+     --user <id> to run only one user (multi-user mode).
 """
 import argparse
 import logging
@@ -42,6 +48,12 @@ from src.entry_router import (
     route_to_options_executor,
     route_to_stock_executor,
     should_use_options,
+)
+from src.user_manager import UserManager
+from src.loop_helpers import (
+    UserLoopContext,
+    init_user_contexts,
+    log_startup_summary,
 )
 
 
@@ -87,6 +99,12 @@ def main() -> None:
     parser.add_argument("--live", action="store_true", help="Use live account (real money)")
     parser.add_argument("--paper", action="store_true", help="Use paper account (default)")
     parser.add_argument(
+        "--user",
+        type=str,
+        default=None,
+        help="Run only this user_id (multi-user mode)",
+    )
+    parser.add_argument(
         "--verbose",
         "-v",
         action="store_true",
@@ -101,38 +119,68 @@ def main() -> None:
 
     config_path = PROJECT_ROOT / "config" / "default.yaml"
     config = load_config(config_path)
-    if args.live:
-        config.setdefault("broker", {})["paper"] = False
-        # News + FinBERT disabled for live trading (bandwidth / latency / signal risk)
-        config.setdefault("news_sentiment", {})["enabled"] = False
-    elif args.paper:
-        config.setdefault("broker", {})["paper"] = True
 
-    broker_cfg = config.get("broker", {})
+    # ---------------------------------------------------------------------------
+    # Multi-user setup via UserManager
+    # ---------------------------------------------------------------------------
+    users_path = PROJECT_ROOT / "config" / "users.yaml"
+    user_manager = UserManager(config, users_path=users_path)
+
+    if user_manager.multi_user and (args.live or args.paper):
+        print("WARNING: --live/--paper flags are ignored in multi-user mode "
+              "(each user has their own paper flag in users.yaml)")
+
+    user_contexts = init_user_contexts(
+        user_manager,
+        project_root=PROJECT_ROOT,
+        user_filter=args.user,
+    )
+    if not user_contexts:
+        print("No user contexts loaded. Exiting.")
+        sys.exit(1)
+
+    log_startup_summary(user_contexts)
+
+    # In single-user fallback, apply --live/--paper to the default user's config
+    if not user_manager.multi_user:
+        uctx = user_contexts[0]
+        if args.live:
+            uctx.config.setdefault("broker", {})["paper"] = False
+            uctx.config.setdefault("news_sentiment", {})["enabled"] = False
+        elif args.paper:
+            uctx.config.setdefault("broker", {})["paper"] = True
+
+    # Use the first user's config for shared settings (calendar, intervals)
+    # These are system-wide, not per-user
+    first_config = user_contexts[0].config
+    broker_cfg = first_config.get("broker", {})
     if broker_cfg.get("firm") != "alpaca":
         print("Config broker.firm is not 'alpaca'. Exiting.")
         sys.exit(1)
 
-    broker = AlpacaBroker(config)
-    mode = "PAPER" if broker.paper else "LIVE (real money)"
+    # For backward compat: single-user uses first context's broker/engine directly
+    broker = user_contexts[0].broker
+    engine = user_contexts[0].engine
+    mode = "PAPER" if user_contexts[0].paper else "LIVE (real money)"
     print("AlgoSphere — broker mode:", mode, flush=True)
-    engine = TradingEngine(config=config)
-    calendar = MarketCalendar(config)
-    regime_scorer = MarketRegimeScorer(config)
+    calendar = MarketCalendar(first_config)
+    regime_scorer = MarketRegimeScorer(first_config)
     et = pytz.timezone("America/New_York")
     exit_interval_min = int(broker_cfg.get("exit_check_interval_minutes") or broker_cfg.get("check_interval_minutes", 5))
     entry_interval_min = int(broker_cfg.get("entry_check_interval_minutes", 10))
     exit_interval_sec = exit_interval_min * 60
     entry_interval_sec = entry_interval_min * 60
+    # NOTE: In multi-user mode, tracker uses user_id-scoped files.
+    # The legacy tracker_path is kept for backward compat (single-user).
     tracker_path = PROJECT_ROOT / "data" / "positions_tracked.json"
     last_entry_check_time = None  # entry check every entry_interval_min (e.g. 10 min)
-    mq_cfg = config.get("market_quality", {})
+    mq_cfg = first_config.get("market_quality", {})
     stale_quote_max_age = float(mq_cfg.get("stale_quote_max_age_seconds", 60))
-    regime_pct_above_50d_ma = float(config.get("universe", {}).get("regime_min_pct_above_50d_ma", 0.30))
-    ns_cfg = config.get("news_sentiment") or {}
+    regime_pct_above_50d_ma = float(first_config.get("universe", {}).get("regime_min_pct_above_50d_ma", 0.30))
+    ns_cfg = first_config.get("news_sentiment") or {}
     news_enabled = bool(ns_cfg.get("enabled", False))
-    news_pipeline = NewsSentimentPipeline(config) if news_enabled else None
-    news_rules = NewsRuleEngine.from_config(config) if news_enabled else None
+    news_pipeline = NewsSentimentPipeline(first_config) if news_enabled else None
+    news_rules = NewsRuleEngine.from_config(first_config) if news_enabled else None
     news_vol_lookback = int(ns_cfg.get("volume_lookback_days", 20))
 
     print("Running until market close. Exits every %d min, entries every %d min. Ctrl+C to stop." % (exit_interval_min, entry_interval_min))
@@ -153,36 +201,47 @@ def main() -> None:
             time.sleep(exit_interval_sec)
             continue
 
-        print(dt.strftime("%H:%M ET"), "— in session, fetching account...")
-        sys.stdout.flush()
-        account_equity = broker.get_equity()
-        engine.update_equity(account_equity)
-        engine.state.pdt.equity = account_equity
+        # ---- Per-user trading pass ----
+        all_users_stopped = True
+        for _uctx in user_contexts:
+          try:
+            _uid = _uctx.user_id
+            broker = _uctx.broker
+            engine = _uctx.engine
+            config = _uctx.config
 
-        # Stop if portfolio risk says no more trading today
-        can_trade, reason = engine.portfolio_risk.can_trade(
-            engine.state.portfolio_risk, account_equity, "SPY", dt.date()
-        )
-        if not can_trade:
-            print(dt.strftime("%Y-%m-%d %H:%M ET"), reason, "- Stopping for today.")
-            break
+            print(dt.strftime("%H:%M ET"), "[%s] — in session, fetching account..." % _uid)
+            sys.stdout.flush()
+            account_equity = broker.get_equity()
+            engine.update_equity(account_equity)
+            engine.state.pdt.equity = account_equity
 
-        positions = broker.get_positions()
-        tracked = load_tracked(tracker_path)
-        # Sync tracker with broker: add any position broker has that we don't track (e.g. after restart)
-        for p in positions:
-            sym = p["symbol"]
-            if sym not in tracked:
-                cost = float(p.get("cost_basis") or 0)
-                qty_raw = int(float(p.get("qty") or 0))
-                qty = abs(qty_raw)
-                side = (p.get("side") or "long").strip().lower()
-                if side != "long" and side != "short":
-                    side = "short" if qty_raw < 0 else "long"
-                # For shorts Alpaca may report cost_basis as proceeds; entry = price per share (positive)
-                entry = abs(cost / qty_raw) if qty_raw else 0
-                add_tracked(tracker_path, sym, qty, entry, 1.5, side=side)
-        tracked = load_tracked(tracker_path)
+            # Stop if portfolio risk says no more trading today
+            can_trade, reason = engine.portfolio_risk.can_trade(
+                engine.state.portfolio_risk, account_equity, "SPY", dt.date()
+            )
+            if not can_trade:
+                print(dt.strftime("%Y-%m-%d %H:%M ET"), "[%s]" % _uid, reason, "- Stopped for today.")
+                continue
+            all_users_stopped = False
+
+            _data_dir = _uctx.data_dir
+            positions = broker.get_positions()
+            tracked = load_tracked(_uid, data_dir=_data_dir)
+            # Sync tracker with broker: add any position broker has that we don't track (e.g. after restart)
+            for p in positions:
+                sym = p["symbol"]
+                if sym not in tracked:
+                    cost = float(p.get("cost_basis") or 0)
+                    qty_raw = int(float(p.get("qty") or 0))
+                    qty = abs(qty_raw)
+                    side = (p.get("side") or "long").strip().lower()
+                    if side != "long" and side != "short":
+                        side = "short" if qty_raw < 0 else "long"
+                    # For shorts Alpaca may report cost_basis as proceeds; entry = price per share (positive)
+                    entry = abs(cost / qty_raw) if qty_raw else 0
+                    add_tracked(sym, qty, entry, 1.5, side=side, user_id=_uid, data_dir=_data_dir)
+            tracked = load_tracked(_uid, data_dir=_data_dir)
         current_positions = {p["symbol"]: {"notional": p["market_value"], "stop_pct": tracked.get(p["symbol"], {}).get("stop_pct", 1.5)} for p in positions}
         sector_exposure_pct = {}
         symbols = config.get("universe", {}).get("symbols", ["SPY"])
@@ -199,10 +258,10 @@ def main() -> None:
             qty = int(pos.get("qty", 0))
             side = (pos.get("side") or "long").strip().lower()
             if qty <= 0:
-                remove_tracked(tracker_path, symbol)
+                remove_tracked(symbol, user_id=_uid, data_dir=_data_dir)
                 continue
             if not any(p["symbol"] == symbol for p in positions):
-                remove_tracked(tracker_path, symbol)
+                remove_tracked(symbol, user_id=_uid, data_dir=_data_dir)
                 continue
             try:
                 quote = broker.get_latest_quote(symbol)
@@ -256,7 +315,7 @@ def main() -> None:
                                             ExitReason.NEWS_SENTIMENT.value,
                                             "(sent=%.2f)" % sent,
                                         )
-                                    remove_tracked(tracker_path, symbol)
+                                    remove_tracked(symbol, user_id=_uid, data_dir=_data_dir)
                                     continue
                     except Exception as e:
                         if verbose:
@@ -280,11 +339,11 @@ def main() -> None:
                         if cover_order:
                             broker.submit_order(cover_order)
                             print(dt.strftime("%H:%M ET"), symbol, "COVER", qty, "shares (legacy short) —", exit_signal.reason.value)
-                        remove_tracked(tracker_path, symbol)
+                        remove_tracked(symbol, user_id=_uid, data_dir=_data_dir)
                     continue
                 if partial_taken:
                     new_high = max(trail_high_f or entry_price, quote.mid)
-                    update_tracked(tracker_path, symbol, trail_high=new_high)
+                    update_tracked(symbol, user_id=_uid, data_dir=_data_dir, trail_high=new_high)
                     trail_high_f = new_high
                 exit_signal = engine.check_exit(
                     symbol,
@@ -308,9 +367,9 @@ def main() -> None:
                         remaining = qty - qty_to_sell
                         if remaining <= 0:
                             engine.record_profit_exit(symbol, dt, quote.mid)
-                            remove_tracked(tracker_path, symbol)
+                            remove_tracked(symbol, user_id=_uid, data_dir=_data_dir)
                         else:
-                            update_tracked(tracker_path, symbol, qty=remaining, partial_taken=True, trail_high=quote.mid)
+                            update_tracked(symbol, user_id=_uid, data_dir=_data_dir, qty=remaining, partial_taken=True, trail_high=quote.mid)
                     else:
                         sell_order = engine.execution.build_order(symbol, "sell", qty, quote.mid, quote.spread_pct)
                         if sell_order:
@@ -320,7 +379,7 @@ def main() -> None:
                             engine.record_stop_loss(symbol, dt, entry_price=entry_price)
                         elif exit_signal.reason in (ExitReason.TAKE_PROFIT, ExitReason.TRAILING_STOP):
                             engine.record_profit_exit(symbol, dt, quote.mid)
-                        remove_tracked(tracker_path, symbol)
+                        remove_tracked(symbol, user_id=_uid, data_dir=_data_dir)
             except Exception as e:
                 print(dt.strftime("%H:%M ET"), symbol, "exit check skip —", type(e).__name__, str(e)[:60])
                 continue
@@ -646,7 +705,7 @@ def main() -> None:
                                 nonlocal current_bear_etf_notional, current_bear_etf, current_positions
                                 broker.submit_order(buy_order)
                                 current_bear_etf_notional += sizing.notional
-                                add_tracked(tracker_path, symbol, sizing.shares, close, bear_etf_stop_pct, side="long")
+                                add_tracked(symbol, sizing.shares, close, bear_etf_stop_pct, side="long", user_id=_uid, data_dir=_data_dir)
                                 current_bear_etf += 1
                                 current_positions[symbol] = {"notional": sizing.notional, "stop_pct": bear_etf_stop_pct}
                                 label_local = "QQQ < MA50" if sym_u == "SQQQ" else "breakdown"
@@ -706,7 +765,9 @@ def main() -> None:
                             if dist_pct >= trig:
                                 active_step_idx = i
 
-                        tracked_row = get_tracked_entry_info(tracker_path, sqqq_sym)
+                        tracked_row = get_tracked_entry_info(
+                            _data_dir / f"positions_{_uid}.json", sqqq_sym
+                        )
                         scale_count = int(
                             (tracked_row.get("scale_count") or 1)
                             if sqqq_sym in current_positions
@@ -896,11 +957,12 @@ def main() -> None:
 
                                                         prev = current_positions.get(sqqq_sym, {})
                                                         merge_add_tracked(
-                                                            tracker_path,
                                                             sqqq_sym,
                                                             add_sh,
                                                             close_s,
                                                             bear_etf_stop_pct,
+                                                            user_id=_uid,
+                                                            data_dir=_data_dir,
                                                             extras={
                                                                 "scale_count": scale_count + 1,
                                                                 "last_entry_price": close_s,
@@ -1163,7 +1225,7 @@ def main() -> None:
                                     qty_bought = decision.position_sizing.shares if decision.position_sizing else 0
                                     entry_price = float(df["close"].iloc[-1]) if not df.empty else quote.mid
                                     stop_pct = decision.entry_signal.stop_pct if decision.entry_signal else 1.5
-                                    add_tracked(tracker_path, symbol, qty_bought, entry_price, stop_pct)
+                                    add_tracked(symbol, qty_bought, entry_price, stop_pct, user_id=_uid, data_dir=_data_dir)
                                     src = (decision.entry_signal.metadata or {}).get("source") if decision.entry_signal else None
                                     if src == "news_sentiment":
                                         print(
@@ -1204,6 +1266,16 @@ def main() -> None:
                             force=False,
                         )
                         continue
+
+          except Exception as _user_exc:
+            print(dt.strftime("%H:%M ET"), "[%s] ERROR: %s: %s — skipping to next user" % (
+                _uid, type(_user_exc).__name__, str(_user_exc)[:120]))
+            continue
+        # end for _uctx in user_contexts
+
+        if all_users_stopped:
+            print(dt.strftime("%Y-%m-%d %H:%M ET"), "All users stopped for today.")
+            break
 
         elapsed = int(now_sec - last_entry_check_time) // 60 if last_entry_check_time else 0
         next_entry_min = max(0, entry_interval_min - elapsed)

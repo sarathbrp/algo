@@ -4,10 +4,19 @@ Portfolio & drawdown controls: daily loss limit, max drawdown, safe mode, trade 
 - Daily loss limit: e.g. -1% to -3% → stop trading for the day.
 - Max drawdown: e.g. -10% → safe mode (paper only) until recovery.
 - Trade frequency limit to prevent overtrading loops.
+
+Multi-user support: ``MultiUserPortfolioRiskManager`` holds per-user
+``PortfolioRiskState`` and per-user ``PortfolioRiskManager`` (each user
+may have different config overrides).
 """
+from __future__ import annotations
+
+import logging
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -95,3 +104,71 @@ class PortfolioRiskManager:
         state.daily_trade_count += 1
         state.daily_trades_per_symbol[symbol] = state.daily_trades_per_symbol.get(symbol, 0) + 1
         state.daily_pnl_pct += pnl_pct
+
+
+# ---------------------------------------------------------------------------
+# Multi-user wrapper
+# ---------------------------------------------------------------------------
+
+class MultiUserPortfolioRiskManager:
+    """Per-user portfolio risk management.
+
+    Each user gets their own ``PortfolioRiskState`` and their own
+    ``PortfolioRiskManager`` (so per-user config overrides like different
+    daily loss limits are respected).
+
+    Parameters
+    ----------
+    user_configs : dict[str, dict]
+        Mapping of ``user_id`` → fully-merged config dict.  Typically
+        built by ``UserManager.list_users()`` contexts.
+    """
+
+    def __init__(self, user_configs: dict[str, dict[str, Any]] | None = None) -> None:
+        self._managers: dict[str, PortfolioRiskManager] = {}
+        self._states: dict[str, PortfolioRiskState] = {}
+        if user_configs:
+            for uid, cfg in user_configs.items():
+                self.register_user(uid, cfg)
+
+    def register_user(self, user_id: str, config: dict[str, Any]) -> None:
+        """Register a user with their config. Idempotent."""
+        if user_id not in self._managers:
+            self._managers[user_id] = PortfolioRiskManager(config)
+            self._states[user_id] = PortfolioRiskState()
+            logger.debug("[%s] Portfolio risk state initialised", user_id)
+
+    def _get(self, user_id: str) -> tuple[PortfolioRiskManager, PortfolioRiskState]:
+        try:
+            return self._managers[user_id], self._states[user_id]
+        except KeyError:
+            raise KeyError(
+                f"User '{user_id}' not registered with MultiUserPortfolioRiskManager"
+            ) from None
+
+    def get_state(self, user_id: str) -> PortfolioRiskState:
+        """Return the raw state for *user_id* (read-only inspection)."""
+        _, state = self._get(user_id)
+        return state
+
+    def update_equity(self, user_id: str, dt: datetime, equity: float) -> None:
+        mgr, state = self._get(user_id)
+        mgr.update_equity(state, dt, equity)
+
+    def can_trade(
+        self,
+        user_id: str,
+        current_equity: float,
+        symbol: str,
+        today: date | None = None,
+    ) -> tuple[bool, str]:
+        mgr, state = self._get(user_id)
+        return mgr.can_trade(state, current_equity, symbol, today)
+
+    def record_trade(self, user_id: str, symbol: str, pnl_pct: float) -> None:
+        mgr, state = self._get(user_id)
+        mgr.record_trade(state, symbol, pnl_pct)
+
+    def check_daily_reset(self, user_id: str, today: date) -> None:
+        mgr, state = self._get(user_id)
+        mgr.check_daily_reset(state, today)

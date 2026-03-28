@@ -4,10 +4,19 @@ Compliance: PDT rules, account constraints, best execution note.
 - Pattern Day Trader (PDT): margin account day-trading may require $25,000 min equity.
 - FINRA has discussed modernizing/eliminating the $25k PDT; treat as current but potentially changing.
 - Broker best execution duty (enforced via app limits only).
+
+Multi-user support: ``MultiUserComplianceManager`` holds per-user
+``PDTState`` and per-user ``ComplianceManager`` (each user may have
+different config overrides).
 """
-from dataclasses import dataclass
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -62,3 +71,64 @@ class ComplianceManager:
 
     def update_equity(self, state: PDTState, equity: float) -> None:
         state.equity = equity
+
+
+# ---------------------------------------------------------------------------
+# Multi-user wrapper
+# ---------------------------------------------------------------------------
+
+class MultiUserComplianceManager:
+    """Per-user compliance (PDT) management.
+
+    Each user gets their own ``PDTState`` and their own
+    ``ComplianceManager`` (so per-user config overrides like different
+    PDT thresholds or margin flags are respected).
+
+    Parameters
+    ----------
+    user_configs : dict[str, dict]
+        Mapping of ``user_id`` → fully-merged config dict.
+    """
+
+    def __init__(self, user_configs: dict[str, dict[str, Any]] | None = None) -> None:
+        self._managers: dict[str, ComplianceManager] = {}
+        self._states: dict[str, PDTState] = {}
+        if user_configs:
+            for uid, cfg in user_configs.items():
+                self.register_user(uid, cfg)
+
+    def register_user(self, user_id: str, config: dict[str, Any]) -> None:
+        """Register a user with their config. Idempotent."""
+        if user_id not in self._managers:
+            self._managers[user_id] = ComplianceManager(config)
+            self._states[user_id] = PDTState(equity=0.0, day_trades_count_rolling=0, day_trade_dates=[])
+            logger.debug("[%s] Compliance state initialised", user_id)
+
+    def _get(self, user_id: str) -> tuple[ComplianceManager, PDTState]:
+        try:
+            return self._managers[user_id], self._states[user_id]
+        except KeyError:
+            raise KeyError(
+                f"User '{user_id}' not registered with MultiUserComplianceManager"
+            ) from None
+
+    def get_state(self, user_id: str) -> PDTState:
+        """Return the raw state for *user_id* (read-only inspection)."""
+        _, state = self._get(user_id)
+        return state
+
+    def can_day_trade(
+        self,
+        user_id: str,
+        trade_date: date,
+    ) -> tuple[bool, str]:
+        mgr, state = self._get(user_id)
+        return mgr.can_day_trade(state, trade_date)
+
+    def record_day_trade(self, user_id: str, trade_date: date) -> None:
+        mgr, state = self._get(user_id)
+        mgr.record_day_trade(state, trade_date)
+
+    def update_equity(self, user_id: str, equity: float) -> None:
+        mgr, state = self._get(user_id)
+        mgr.update_equity(state, equity)
