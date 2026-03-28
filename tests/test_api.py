@@ -47,8 +47,15 @@ def TestSession(test_engine):
 @pytest.fixture(scope="module")
 def client(test_engine, TestSession):
     def override_get_db():
-        with TestSession() as session:
+        session = TestSession()
+        try:
             yield session
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
 
     app.dependency_overrides[get_db] = override_get_db
 
@@ -281,3 +288,175 @@ def test_admin_users_forbidden_for_trader(client, seeded, trader_token):
 def test_admin_users_no_auth(client):
     resp = client.get("/api/admin/users")
     assert resp.status_code in (401, 403)
+
+
+# ---------------------------------------------------------------------------
+# /auth/register
+# ---------------------------------------------------------------------------
+
+def test_register_success(client):
+    resp = client.post("/auth/register", json={
+        "email": "newuser@register-test.example.com",
+        "password": "validpass123",
+    })
+    assert resp.status_code == 201
+    data = resp.json()
+    assert "access_token" in data
+    assert data["token_type"] == "bearer"
+
+
+def test_register_returns_valid_token(client):
+    resp = client.post("/auth/register", json={
+        "email": "tokencheck@register-test.example.com",
+        "password": "validpass123",
+    })
+    token = resp.json()["access_token"]
+    # Use the token to hit /auth/me
+    me_resp = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert me_resp.status_code == 200
+    assert me_resp.json()["email"] == "tokencheck@register-test.example.com"
+    assert me_resp.json()["role"] == "trader"
+
+
+def test_register_duplicate_email(client):
+    client.post("/auth/register", json={
+        "email": "dupe@register-test.example.com",
+        "password": "validpass123",
+    })
+    resp = client.post("/auth/register", json={
+        "email": "dupe@register-test.example.com",
+        "password": "differentpass123",
+    })
+    assert resp.status_code == 409
+    assert "already exists" in resp.json()["detail"]
+
+
+def test_register_short_password(client):
+    resp = client.post("/auth/register", json={
+        "email": "short@register-test.example.com",
+        "password": "abc",
+    })
+    assert resp.status_code == 422
+
+
+def test_register_invalid_email(client):
+    resp = client.post("/auth/register", json={
+        "email": "not-an-email",
+        "password": "validpass123",
+    })
+    assert resp.status_code == 422
+
+
+def test_register_missing_fields(client):
+    resp = client.post("/auth/register", json={"email": "only@email.com"})
+    assert resp.status_code == 422
+
+
+def test_register_then_login(client):
+    """Full flow: register then login with same credentials."""
+    email = "flow@register-test.example.com"
+    password = "mypassword123"
+    reg_resp = client.post("/auth/register", json={"email": email, "password": password})
+    assert reg_resp.status_code == 201
+
+    login_resp = client.post("/auth/login", json={"email": email, "password": password})
+    assert login_resp.status_code == 200
+    assert "access_token" in login_resp.json()
+
+
+# ---------------------------------------------------------------------------
+# /api/users/{id}/onboard
+# ---------------------------------------------------------------------------
+
+def test_onboard_success(client):
+    # Register a new user
+    reg = client.post("/auth/register", json={
+        "email": "onboard@onboard-test.example.com",
+        "password": "validpass123",
+    })
+    token = reg.json()["access_token"]
+    me = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+    user_id = me.json()["id"]
+
+    resp = client.put(
+        f"/api/users/{user_id}/onboard",
+        json={
+            "alpaca_key": "PKTEST123",
+            "alpaca_secret": "secretkey456",
+            "paper": True,
+            "risk_profile": "conservative",
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+
+
+def test_onboard_updates_user_profile(client):
+    # Register and onboard
+    reg = client.post("/auth/register", json={
+        "email": "onboard2@onboard-test.example.com",
+        "password": "validpass123",
+    })
+    token = reg.json()["access_token"]
+    me = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+    user_id = me.json()["id"]
+
+    client.put(
+        f"/api/users/{user_id}/onboard",
+        json={
+            "alpaca_key": "PKLIVE789",
+            "alpaca_secret": "livesecret",
+            "paper": False,
+            "risk_profile": "aggressive",
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    # Verify profile updated
+    me2 = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert me2.json()["paper"] is False
+
+
+def test_onboard_forbidden_other_user(client, seeded, trader_token):
+    resp = client.put(
+        "/api/users/api_admin/onboard",
+        json={
+            "alpaca_key": "PK123",
+            "alpaca_secret": "secret",
+            "paper": True,
+            "risk_profile": "balanced",
+        },
+        headers={"Authorization": f"Bearer {trader_token}"},
+    )
+    assert resp.status_code == 403
+
+
+def test_onboard_no_auth(client, seeded):
+    resp = client.put(
+        "/api/users/api_trader/onboard",
+        json={
+            "alpaca_key": "PK123",
+            "alpaca_secret": "secret",
+            "paper": True,
+            "risk_profile": "balanced",
+        },
+    )
+    assert resp.status_code in (401, 403)
+
+
+def test_onboard_missing_fields(client):
+    reg = client.post("/auth/register", json={
+        "email": "onboard3@onboard-test.example.com",
+        "password": "validpass123",
+    })
+    token = reg.json()["access_token"]
+    me = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+    user_id = me.json()["id"]
+
+    resp = client.put(
+        f"/api/users/{user_id}/onboard",
+        json={"alpaca_key": "PK123"},  # missing alpaca_secret
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 422
