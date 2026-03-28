@@ -1,16 +1,79 @@
-"""Track open positions (entry price, time) for exit logic. Persisted to JSON."""
+"""Track open positions (entry price, time) for exit logic. Persisted to JSON.
+
+Each user's positions are stored in a separate file:
+``data/positions_{user_id}.json``.  When no ``user_id`` is supplied the
+module falls back to ``"default"``.
+
+On first run, if a legacy ``data/positions_tracked.json`` exists it is
+automatically migrated to ``data/positions_default.json``.
+"""
+from __future__ import annotations
+
 import json
-from pathlib import Path
+import logging
+import shutil
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
+logger = logging.getLogger(__name__)
 
-def _default_path() -> Path:
-    return Path(__file__).resolve().parent.parent / "data" / "positions_tracked.json"
+# ---------------------------------------------------------------------------
+# Path helpers
+# ---------------------------------------------------------------------------
+
+def _data_dir() -> Path:
+    """Return the default ``data/`` directory (project root / data)."""
+    return Path(__file__).resolve().parent.parent / "data"
 
 
-def load(base_path: Path | None = None) -> dict[str, dict[str, Any]]:
-    path = base_path or _default_path()
+def _user_path(user_id: str = "default", data_dir: Path | None = None) -> Path:
+    """Return the JSON path for *user_id*: ``<data_dir>/positions_<user_id>.json``."""
+    d = data_dir or _data_dir()
+    return d / f"positions_{user_id}.json"
+
+
+_LEGACY_FILENAME = "positions_tracked.json"
+
+
+def _migrate_legacy(data_dir: Path | None = None) -> None:
+    """If the legacy ``positions_tracked.json`` exists, copy it to
+    ``positions_default.json`` and rename the old file to a ``.bak``
+    so it is preserved but no longer used.
+    """
+    d = data_dir or _data_dir()
+    legacy = d / _LEGACY_FILENAME
+    target = _user_path("default", d)
+    if legacy.exists() and not target.exists():
+        shutil.copy2(legacy, target)
+        backup = legacy.with_suffix(".json.bak")
+        legacy.rename(backup)
+        logger.info(
+            "Migrated legacy %s → %s (backup at %s)",
+            legacy.name, target.name, backup.name,
+        )
+
+
+# ---------------------------------------------------------------------------
+# CRUD
+# ---------------------------------------------------------------------------
+
+def load(
+    user_id: str = "default",
+    *,
+    data_dir: Path | None = None,
+    base_path: Path | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Load tracked positions for *user_id*.
+
+    ``base_path`` is accepted for backward compatibility but ``user_id``
+    is the preferred interface.
+    """
+    if base_path is not None:
+        path = base_path
+    else:
+        _migrate_legacy(data_dir)
+        path = _user_path(user_id, data_dir)
     if not path.exists():
         return {}
     try:
@@ -20,15 +83,21 @@ def load(base_path: Path | None = None) -> dict[str, dict[str, Any]]:
         return {}
 
 
-def save(data: dict[str, dict[str, Any]], base_path: Path | None = None) -> None:
-    path = base_path or _default_path()
+def save(
+    data: dict[str, dict[str, Any]],
+    user_id: str = "default",
+    *,
+    data_dir: Path | None = None,
+    base_path: Path | None = None,
+) -> None:
+    """Persist *data* for *user_id*."""
+    path = base_path if base_path is not None else _user_path(user_id, data_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as f:
         json.dump(data, f, indent=2)
 
 
 def add(
-    base_path: Path | None,
     symbol: str,
     qty: int,
     entry_price: float,
@@ -36,8 +105,13 @@ def add(
     partial_taken: bool = False,
     trail_high: float | None = None,
     side: str = "long",
+    user_id: str = "default",
+    *,
+    data_dir: Path | None = None,
+    base_path: Path | None = None,
 ) -> None:
-    data = load(base_path)
+    """Add a new tracked position for *symbol*."""
+    data = load(user_id, data_dir=data_dir, base_path=base_path)
     data[symbol.upper()] = {
         "qty": qty,
         "entry_price": entry_price,
@@ -48,31 +122,37 @@ def add(
         "side": (side or "long").strip().lower(),
         "last_buy_price": float(entry_price),
     }
-    save(data, base_path)
+    save(data, user_id, data_dir=data_dir, base_path=base_path)
 
 
 def merge_add_shares(
-    base_path: Path | None,
     symbol: str,
     add_qty: int,
     fill_price: float,
     stop_pct: float | None = None,
+    user_id: str = "default",
     *,
+    data_dir: Path | None = None,
+    base_path: Path | None = None,
     extras: dict[str, Any] | None = None,
 ) -> None:
-    """Increase qty for an open position; weight-average entry_price. If not tracked, same as add()."""
+    """Increase qty for an open position; weight-average entry_price.
+
+    If not tracked, behaves like :func:`add`.
+    """
     if add_qty <= 0:
         return
-    data = load(base_path)
+    data = load(user_id, data_dir=data_dir, base_path=base_path)
     key = symbol.upper()
     if key not in data:
-        add(base_path, symbol, add_qty, fill_price, stop_pct if stop_pct is not None else 2.0)
+        add(symbol, add_qty, fill_price, stop_pct if stop_pct is not None else 2.0,
+            user_id=user_id, data_dir=data_dir, base_path=base_path)
         if extras:
-            data = load(base_path)
+            data = load(user_id, data_dir=data_dir, base_path=base_path)
             if key in data:
                 for ek, ev in extras.items():
                     data[key][ek] = ev
-                save(data, base_path)
+                save(data, user_id, data_dir=data_dir, base_path=base_path)
         return
     old = data[key]
     oq = int(old.get("qty", 0))
@@ -92,18 +172,21 @@ def merge_add_shares(
     if extras:
         for ek, ev in extras.items():
             data[key][ek] = ev
-    save(data, base_path)
+    save(data, user_id, data_dir=data_dir, base_path=base_path)
 
 
 def update(
-    base_path: Path | None,
     symbol: str,
     qty: int | None = None,
     partial_taken: bool | None = None,
     trail_high: float | None = None,
+    user_id: str = "default",
+    *,
+    data_dir: Path | None = None,
+    base_path: Path | None = None,
 ) -> None:
     """Update one or more fields for an existing position."""
-    data = load(base_path)
+    data = load(user_id, data_dir=data_dir, base_path=base_path)
     key = symbol.upper()
     if key not in data:
         return
@@ -113,19 +196,35 @@ def update(
         data[key]["partial_taken"] = partial_taken
     if trail_high is not None:
         data[key]["trail_high"] = trail_high
-    save(data, base_path)
+    save(data, user_id, data_dir=data_dir, base_path=base_path)
 
 
-def remove(base_path: Path | None, symbol: str) -> None:
-    data = load(base_path)
+def remove(
+    symbol: str,
+    user_id: str = "default",
+    *,
+    data_dir: Path | None = None,
+    base_path: Path | None = None,
+) -> None:
+    """Remove *symbol* from tracked positions."""
+    data = load(user_id, data_dir=data_dir, base_path=base_path)
     data.pop(symbol.upper(), None)
-    save(data, base_path)
+    save(data, user_id, data_dir=data_dir, base_path=base_path)
 
 
-def clear_all(base_path: Path | None = None) -> None:
+def clear_all(
+    user_id: str = "default",
+    *,
+    data_dir: Path | None = None,
+    base_path: Path | None = None,
+) -> None:
     """Clear all tracked positions (e.g. after resetting paper account)."""
-    save({}, base_path)
+    save({}, user_id, data_dir=data_dir, base_path=base_path)
 
+
+# ---------------------------------------------------------------------------
+# Time helpers (stateless — no user_id needed)
+# ---------------------------------------------------------------------------
 
 def bars_held(entry_time_iso: str, now: datetime | None = None) -> int:
     """Days held (for daily bars)."""
@@ -184,8 +283,8 @@ def minutes_since_iso(ts: str | None, now_dt: datetime) -> float | None:
 
 def get_tracked_entry_info(tracker_path: Path | str | None, symbol: str) -> dict[str, Any]:
     """Return one symbol's row from the tracker file, or {} if missing / invalid."""
-    path = Path(tracker_path) if tracker_path is not None else _default_path()
-    data = load(path)
+    path = Path(tracker_path) if tracker_path is not None else _user_path("default")
+    data = load(base_path=path)
     key = str(symbol).upper()
     row = data.get(key) or data.get(symbol) or {}
     return row if isinstance(row, dict) else {}
