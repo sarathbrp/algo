@@ -30,3 +30,15 @@ Thumbs.db
 
 # Optional: uncomment if you keep a local config with secrets
 # config/local.yaml
+
+# Test coverage
+.coverage
+.coverage.*
+htmlcov/
+
+# Generated HTML
+dashboard.html
+
+# Frontend build artifacts and dependencies
+frontend/dist/
+frontend/node_modules/
