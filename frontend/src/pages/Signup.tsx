@@ -1,19 +1,37 @@
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
+import { register, getMe } from '@/lib/api'
+import { useAuthStore } from '@/store/authStore'
 
 export function Signup() {
   const navigate = useNavigate()
+  const setAuth = useAuthStore((s) => s.setAuth)
   const [email, setEmail]       = useState('')
   const [password, setPassword] = useState('')
   const [confirm, setConfirm]   = useState('')
   const [error, setError]       = useState('')
+  const [loading, setLoading]   = useState(false)
 
-  function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     if (!email || !password || !confirm) { setError('All fields are required.'); return }
     if (password !== confirm) { setError('Passwords do not match.'); return }
     if (password.length < 8) { setError('Password must be at least 8 characters.'); return }
-    navigate('/onboarding')
+
+    setLoading(true)
+    setError('')
+    try {
+      const { access_token } = await register(email, password)
+      setAuth(access_token, '', '', 'trader', true)
+      const profile = await getMe()
+      setAuth(access_token, profile.id, profile.email, profile.role, profile.paper)
+      navigate('/onboarding')
+    } catch (err: any) {
+      const msg = err.response?.data?.detail ?? 'Registration failed. Please try again.'
+      setError(msg)
+    } finally {
+      setLoading(false)
+    }
   }
 
   return (
@@ -42,7 +60,9 @@ export function Signup() {
               </div>
             )}
 
-            <button type="submit" style={submitBtn}>CREATE ACCOUNT</button>
+            <button type="submit" disabled={loading} style={{ ...submitBtn, opacity: loading ? 0.6 : 1 }}>
+              {loading ? 'CREATING...' : 'CREATE ACCOUNT'}
+            </button>
           </form>
 
           <div style={{ marginTop: 20, textAlign: 'center', fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)', letterSpacing: '0.08em' }}>

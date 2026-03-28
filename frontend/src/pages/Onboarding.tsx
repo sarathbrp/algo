@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { StepIndicator } from '@/components/ui/StepIndicator'
+import { onboard } from '@/lib/api'
+import { useAuthStore } from '@/store/authStore'
 
 const STEPS = ['CONNECT BROKER', 'RISK PROFILE', 'CONFIRM']
 
@@ -14,12 +16,14 @@ const PROFILES: { id: RiskProfile; label: string; desc: string; color: string }[
 
 export function Onboarding() {
   const navigate = useNavigate()
+  const userId = useAuthStore((s) => s.userId)
   const [step, setStep]         = useState(0)
   const [apiKey, setApiKey]     = useState('')
   const [apiSecret, setApiSecret] = useState('')
   const [isPaper, setIsPaper]   = useState(true)
   const [profile, setProfile]   = useState<RiskProfile>('balanced')
   const [error, setError]       = useState('')
+  const [loading, setLoading]   = useState(false)
 
   function nextStep() {
     if (step === 0 && (!apiKey || !apiSecret)) { setError('API key and secret are required.'); return }
@@ -27,8 +31,23 @@ export function Onboarding() {
     setStep((s) => s + 1)
   }
 
-  function finish() {
-    navigate('/dashboard')
+  async function finish() {
+    setLoading(true)
+    setError('')
+    try {
+      await onboard(userId!, {
+        alpaca_key: apiKey,
+        alpaca_secret: apiSecret,
+        paper: isPaper,
+        risk_profile: profile,
+      })
+      navigate('/dashboard')
+    } catch (err: any) {
+      const msg = err.response?.data?.detail ?? 'Failed to save settings. Please try again.'
+      setError(msg)
+    } finally {
+      setLoading(false)
+    }
   }
 
   return (
@@ -124,8 +143,10 @@ export function Onboarding() {
                 The bot will start on the next market open. You can pause or stop it at any time from the dashboard.
               </div>
 
-              <ActionBtn onClick={finish} style={{ background: 'var(--green-dim)', border: '1px solid rgba(0,212,139,0.4)', color: 'var(--green)' }}>
-                START PAPER TRADING ▶
+              {error && <ErrorMsg>{error}</ErrorMsg>}
+
+              <ActionBtn onClick={finish} style={{ background: 'var(--green-dim)', border: '1px solid rgba(0,212,139,0.4)', color: 'var(--green)', opacity: loading ? 0.6 : 1 }}>
+                {loading ? 'SAVING...' : 'START PAPER TRADING ▶'}
               </ActionBtn>
             </div>
           )}

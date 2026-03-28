@@ -206,3 +206,36 @@ def get_regime(user_id: str, session: DbSession, current_user: CurrentUser) -> R
     _check_access(current_user, user_id)
     latest = regime_repo.get_latest(session, user_id)
     return _regime_to_out(latest) if latest else None
+
+
+# ---------------------------------------------------------------------------
+# Onboarding
+# ---------------------------------------------------------------------------
+
+class OnboardRequest(BaseModel):
+    alpaca_key: str
+    alpaca_secret: str
+    paper: bool = True
+    risk_profile: str = "balanced"
+
+
+class OnboardResponse(BaseModel):
+    ok: bool = True
+
+
+@router.put("/onboard", response_model=OnboardResponse)
+def onboard(
+    user_id: str,
+    body: OnboardRequest,
+    session: DbSession,
+    current_user: CurrentUser,
+) -> OnboardResponse:
+    _check_access(current_user, user_id)
+    user = user_repo.get_by_id(session, user_id)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+    user.alpaca_key_env = body.alpaca_key
+    user.alpaca_secret_env = body.alpaca_secret
+    user.paper = body.paper
+    user.risk_profile = body.risk_profile
+    return OnboardResponse()

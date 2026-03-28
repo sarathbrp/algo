@@ -84,6 +84,7 @@ class User(Base):
     paper: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     alpaca_key_env: Mapped[str | None] = mapped_column(String(128), nullable=True)
     alpaca_secret_env: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    risk_profile: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=_utcnow
     )

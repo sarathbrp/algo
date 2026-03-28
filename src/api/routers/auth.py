@@ -1,14 +1,21 @@
-"""Auth router — /auth/login and /auth/me."""
+"""Auth router — /auth/login, /auth/register, and /auth/me."""
 from __future__ import annotations
+
+from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, EmailStr
 
 from src.api.deps import CurrentUser, DbSession
-from src.auth import create_token, verify_password
+from src.auth import create_token, hash_password, verify_password
 from src.db.repos import user_repo
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+class RegisterRequest(BaseModel):
+    email: EmailStr
+    password: str
 
 
 class LoginRequest(BaseModel):
@@ -28,6 +35,30 @@ class UserProfile(BaseModel):
     paper: bool
 
     model_config = {"from_attributes": True}
+
+
+@router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
+def register(body: RegisterRequest, session: DbSession) -> TokenResponse:
+    if user_repo.get_by_email(session, body.email) is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="An account with this email already exists",
+        )
+    if len(body.password) < 8:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Password must be at least 8 characters",
+        )
+    user_id = uuid4().hex[:16]
+    user = user_repo.create(
+        session,
+        user_id=user_id,
+        email=body.email,
+        hashed_password=hash_password(body.password),
+    )
+    session.flush()
+    token = create_token(user.id, user.role.value)
+    return TokenResponse(access_token=token)
 
 
 @router.post("/login", response_model=TokenResponse)

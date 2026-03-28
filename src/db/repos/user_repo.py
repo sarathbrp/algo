@@ -29,6 +29,7 @@ def create(
     paper: bool = True,
     alpaca_key_env: str | None = None,
     alpaca_secret_env: str | None = None,
+    risk_profile: str | None = None,
 ) -> User:
     user = User(
         id=user_id,
@@ -38,6 +39,7 @@ def create(
         paper=paper,
         alpaca_key_env=alpaca_key_env,
         alpaca_secret_env=alpaca_secret_env,
+        risk_profile=risk_profile,
     )
     session.add(user)
     return user

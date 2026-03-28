@@ -20,10 +20,11 @@ export default function App() {
           {/* Public auth routes */}
           <Route path="/login"      element={<Login />} />
           <Route path="/signup"     element={<Signup />} />
-          <Route path="/onboarding" element={<Onboarding />} />
 
           {/* Protected app routes */}
           <Route element={<AuthGuard />}>
+            {/* Onboarding has its own layout (no AppShell) */}
+            <Route path="/onboarding" element={<Onboarding />} />
             <Route element={<AppShell />}>
               <Route index             element={<Navigate to="/dashboard" replace />} />
               <Route path="/dashboard" element={<Dashboard />} />

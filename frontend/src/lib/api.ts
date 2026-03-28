@@ -42,6 +42,11 @@ export interface UserProfile {
   paper: boolean
 }
 
+export async function register(email: string, password: string): Promise<TokenResponse> {
+  const res = await apiClient.post<TokenResponse>('/auth/register', { email, password })
+  return res.data
+}
+
 export async function login(email: string, password: string): Promise<TokenResponse> {
   const res = await apiClient.post<TokenResponse>('/auth/login', { email, password })
   return res.data
@@ -118,6 +123,17 @@ export interface UserSummary {
   role: string
   paper: boolean
   equity: number | null
+}
+
+export interface OnboardRequest {
+  alpaca_key: string
+  alpaca_secret: string
+  paper: boolean
+  risk_profile: string
+}
+
+export async function onboard(userId: string, data: OnboardRequest): Promise<void> {
+  await apiClient.put(`/api/users/${userId}/onboard`, data)
 }
 
 export const api = {
