@@ -10,6 +10,16 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from src.config_loader import load_config
 from src.brokers.alpaca_client import AlpacaBroker
 
+
+def _unrealized_pct(p: dict) -> str:
+    """Return unrealized P&L as % of cost basis (Alpaca long: cost_basis > 0)."""
+    cb = float(p.get("cost_basis") or 0)
+    pl = float(p.get("unrealized_pl") or 0)
+    if abs(cb) < 1e-9:
+        return "n/a"
+    return "%+.2f%%" % (100.0 * pl / cb,)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--live", action="store_true", help="Live account")
@@ -32,10 +42,32 @@ def main():
     print(f"Open positions: {len(positions)}")
     if positions:
         print()
-        print("Symbol    Qty    Side   Market value    Unrealized P&L")
-        print("-" * 55)
+        sym_w = max(9, min(24, max(len(str(p["symbol"])) for p in positions)))
+        hdr = (
+            f"{'Symbol':<{sym_w}}  {'Qty':>5}  {'Side':<6}  {'Market $':>12}  {'Unreal $':>12}  {'P/L %':>9}"
+        )
+        print(hdr)
+        print("-" * len(hdr))
         for p in positions:
-            print(f"{p['symbol']:<9} {p['qty']:>5}   {str(p['side']):<6}  ${p['market_value']:>12,.2f}   ${p['unrealized_pl']:>+10,.2f}")
+            sym = str(p["symbol"])
+            if len(sym) > sym_w:
+                sym = sym[: sym_w - 1] + "…"
+            print(
+                f"{sym:<{sym_w}}  {p['qty']:>5}  {str(p['side']):<6}  "
+                f"${p['market_value']:>11,.2f}  ${p['unrealized_pl']:>+11,.2f}  {_unrealized_pct(p):>9}"
+            )
+        total_upl = sum(float(p.get("unrealized_pl") or 0) for p in positions)
+        total_cb = sum(float(p.get("cost_basis") or 0) for p in positions)
+        print("-" * len(hdr))
+        pct_total = "%+.2f%%" % (100.0 * total_upl / total_cb,) if abs(total_cb) > 1e-9 else "n/a"
+        print(
+            f"{'TOTAL':<{sym_w}}  {'':>5}  {'':6}  "
+            f"${sum(p['market_value'] for p in positions):>11,.2f}  ${total_upl:>+11,.2f}  {pct_total:>9}"
+        )
+        if equity > 0:
+            print(
+                "  (total unrealized = %+.2f%% of account equity)" % (100.0 * total_upl / equity,)
+            )
     else:
         print("(No open positions)")
 

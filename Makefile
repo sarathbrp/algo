@@ -2,10 +2,10 @@
 PYTHON ?= python3
 
 .PHONY: help loop loop-paper loop-live loop-v once example backtest \
-	equity prices positions charts sells summary reset download-data scheduled
+	equity prices positions charts sells summary reset download-data scheduled dashboard
 
 help:
-	@echo "Quick commands (use PYTHON=python3.12 to pick interpreter):"
+	@echo "AlgoSphere — quick commands (use PYTHON=python3.12 to pick interpreter):"
 	@echo ""
 	@echo "  make loop-paper   Alpaca loop, paper (default)"
 	@echo "  make loop-live    Alpaca loop, LIVE — real money"
@@ -16,6 +16,7 @@ help:
 	@echo "  make equity|prices|positions|charts|sells|summary"
 	@echo "  make reset        reset paper + tracked JSON"
 	@echo "  make download-data"
+	@echo "  make dashboard    config UI (Streamlit, localhost)"
 	@echo ""
 	@echo "Same via:  ./bin/algo <command>   (see ./bin/algo help)"
 
@@ -63,3 +64,6 @@ download-data:
 
 scheduled:
 	$(PYTHON) scripts/run_scheduled_alpaca.py
+
+dashboard:
+	$(PYTHON) -m streamlit run dashboard/app.py
