@@ -137,7 +137,7 @@ class AlpacaBroker:
         self._option_data: Any = None
         self._options_feed: Any = None
         if ALPACA_OPTIONS_CHAIN and OptionHistoricalDataClient is not None and OptionsFeed is not None:
-            self._option_data = OptionHistoricalDataClient(api_key, secret)
+            self._option_data = OptionHistoricalDataClient(resolved_key, resolved_secret)
             opt_feed_name = (broker_cfg.get("options_feed") or "indicative").strip().lower()
             self._options_feed = getattr(OptionsFeed, opt_feed_name.upper(), OptionsFeed.INDICATIVE)
 
