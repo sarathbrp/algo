@@ -201,8 +201,11 @@ export const api = {
   updateBotControl: (userId: string, data: BotControlUpdate) =>
     apiClient.patch<AccountSettingsOut>(`/api/users/${userId}/bot-control`, data).then(r => r.data),
 
-  quotes: (userId: string, symbols: string[]) =>
-    apiClient.get<QuotesOut>(`/api/users/${userId}/quotes`, { params: { symbols } }).then(r => r.data),
+  quotes: (userId: string, symbols: string[]) => {
+    const params = new URLSearchParams()
+    symbols.forEach((s) => params.append('symbols', s))
+    return apiClient.get<QuotesOut>(`/api/users/${userId}/quotes?${params.toString()}`).then(r => r.data)
+  },
 
   watchlist: (userId: string) =>
     apiClient.get<WatchlistOut>(`/api/users/${userId}/watchlist`).then(r => r.data),
