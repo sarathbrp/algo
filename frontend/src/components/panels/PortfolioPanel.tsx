@@ -19,7 +19,7 @@ function fmtSign(n: number) {
 }
 
 export function PortfolioPanel() {
-  const { stats, regime } = usePortfolio()
+  const { stats, regime, equityHistory } = usePortfolio()
   const prevEquity = useRef(stats.equity)
   const [flash, setFlash] = useState(false)
 
@@ -34,22 +34,23 @@ export function PortfolioPanel() {
 
   const whole = Math.floor(stats.equity).toLocaleString('en-US')
   const cents = String(Math.round((stats.equity % 1) * 100)).padStart(2, '0')
+  const hasHistory = equityHistory.length > 1
+  const isEmpty = stats.equity === 0 && stats.totalTrades === 0 && stats.unrealized === 0
 
   return (
-    <Panel title="PORTFOLIO · default" tag="ALPACA PAPER" accented style={{ gridColumn: 1, gridRow: '1 / 3', display: 'flex', flexDirection: 'column' }}>
+    <Panel title="Portfolio Pulse" tag={regime.label.toUpperCase()} accented style={{ gridColumn: 1, gridRow: 1, display: 'flex', flexDirection: 'column' }}>
 
-      {/* Equity */}
-      <div style={{ padding: '22px 20px 18px', borderBottom: '1px solid var(--border)' }}>
-        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '0.2em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: 10 }}>
-          ACCOUNT EQUITY
+      <div style={{ padding: '18px 18px 14px', borderBottom: '1px solid var(--border)' }}>
+        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: 10 }}>
+          Account equity
         </div>
         <div style={{
           fontFamily: 'var(--font-display)',
-          fontSize: 62,
+          fontSize: 50,
           lineHeight: 1,
           color: 'var(--amber)',
-          textShadow: '0 0 40px rgba(255,179,0,0.3)',
-          letterSpacing: '0.02em',
+          textShadow: '0 0 26px rgba(255,107,61,0.22)',
+          letterSpacing: '-0.05em',
           display: 'flex',
           alignItems: 'baseline',
           gap: 3,
@@ -59,9 +60,11 @@ export function PortfolioPanel() {
           <span>{whole}</span>
           <span style={{ fontSize: 30, opacity: 0.7 }}>.{cents}</span>
         </div>
+        <div style={{ marginTop: 8, fontFamily: 'var(--font-ui)', fontSize: 13, color: 'var(--text-dim)' }}>
+          {isEmpty ? 'Waiting for your first synced account snapshot.' : 'Live balance based on the latest saved portfolio snapshot.'}
+        </div>
       </div>
 
-      {/* Stat grid */}
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr' }}>
         {[
           {
@@ -72,15 +75,15 @@ export function PortfolioPanel() {
           },
           {
             label: 'Unrealized',
-            value: `+$${fmt(stats.unrealized)}`,
-            sub: '3 positions',
-            color: 'var(--green)',
+            value: `${fmtSign(stats.unrealized)}$${fmt(stats.unrealized)}`,
+            sub: 'live open positions',
+            color: stats.unrealized >= 0 ? 'var(--green)' : 'var(--red)',
           },
           {
             label: 'Total Return',
-            value: `+${stats.totalReturn.toFixed(1)}%`,
-            sub: 'from $100,000',
-            color: 'var(--green)',
+            value: `${fmtSign(stats.totalReturn)}${fmt(stats.totalReturn, 1)}%`,
+            sub: 'from earliest loaded snapshot',
+            color: stats.totalReturn >= 0 ? 'var(--green)' : 'var(--red)',
           },
           {
             label: 'Win Rate',
@@ -90,42 +93,46 @@ export function PortfolioPanel() {
           },
         ].map(({ label, value, sub, color }, i) => (
           <div key={label} style={{
-            padding: '14px 20px',
+            padding: '12px 16px',
             borderRight: i % 2 === 0 ? '1px solid var(--border)' : 'none',
             borderBottom: i < 2 ? '1px solid var(--border)' : 'none',
           }}>
-            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '0.16em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: 5 }}>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: 4 }}>
               {label}
             </div>
-            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 19, fontWeight: 500, letterSpacing: '0.02em', color }}>
+            <div style={{ fontFamily: 'var(--font-display)', fontSize: 20, fontWeight: 600, letterSpacing: '-0.04em', color }}>
               {value}
             </div>
-            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)', marginTop: 2 }}>
+            <div style={{ fontFamily: 'var(--font-ui)', fontSize: 11, color: 'var(--text-muted)', marginTop: 3, lineHeight: 1.35 }}>
               {sub}
             </div>
           </div>
         ))}
       </div>
 
-      {/* Sparkline */}
-      <div style={{ padding: '12px 20px 14px', borderBottom: '1px solid var(--border)' }}>
-        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '0.2em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: 8 }}>
-          EQUITY CURVE · TODAY
+      <div style={{ padding: '12px 16px 14px', borderBottom: '1px solid var(--border)' }}>
+        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: 8 }}>
+          Equity trend
         </div>
-        <Sparkline />
+        <Sparkline points={hasHistory ? equityHistory : [stats.equity, stats.equity]} />
+        <div style={{ marginTop: 8, fontFamily: 'var(--font-ui)', fontSize: 12, color: 'var(--text-dim)' }}>
+          {hasHistory ? 'Trend is based on the saved equity history already loaded for this account.' : 'The chart will wake up once more portfolio snapshots are recorded.'}
+        </div>
       </div>
 
-      {/* Radar */}
-      <div style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8, borderBottom: '1px solid var(--border)', flex: 1, justifyContent: 'center' }}>
-        <RegimeRadar />
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '0.16em', textTransform: 'uppercase', color: 'var(--text-muted)' }}>
-            REGIME
-          </span>
-          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 500, color: REGIME_COLORS[regime.label], letterSpacing: '0.1em', textTransform: 'uppercase' }}>
-            {regime.label}
-          </span>
-        </div>
+      <div style={{ padding: '14px 16px 16px', display: 'flex', alignItems: 'center', gap: 12, justifyContent: 'space-between' }}>
+        <RegimeRadar regime={regime} />
+        <div style={{ flex: 1 }}>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-muted)' }}>
+            Market mood
+          </div>
+            <div style={{ marginTop: 6, fontFamily: 'var(--font-display)', fontSize: 22, color: REGIME_COLORS[regime.label], letterSpacing: '-0.04em', textTransform: 'capitalize' }}>
+              {regime.label}
+            </div>
+            <div style={{ marginTop: 4, fontFamily: 'var(--font-ui)', fontSize: 12, color: 'var(--text-dim)', lineHeight: 1.4 }}>
+              SPY {regime.spy >= 0 ? '+' : ''}{(regime.spy * 100).toFixed(1)}% · QQQ {regime.qqq >= 0 ? '+' : ''}{(regime.qqq * 100).toFixed(1)}% · VIX {regime.vix.toFixed(1)}
+            </div>
+          </div>
       </div>
     </Panel>
   )

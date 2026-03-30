@@ -1,103 +1,132 @@
 import { useBotStatus } from '@/hooks/useBotStatus'
 import { Panel } from '@/components/layout/Panel'
-import type { BotStatus } from '@/store/botStore'
+import type { BotState } from '@/lib/api'
 
-const BTN_CONFIG: Record<BotStatus, { label: string; color: string }> = {
-  active:  { label: '▶ START',  color: 'var(--green)' },
-  paused:  { label: '⏸ PAUSE',  color: 'var(--amber)' },
-  stopped: { label: '■ STOP',   color: 'var(--red)' },
+const BTN_CONFIG: Record<BotState, { label: string; color: string; detail: string }> = {
+  running: {
+    label: 'RUN TRADING',
+    color: 'var(--green)',
+    detail: 'Bot may open new trades and manage open positions.',
+  },
+  paused: {
+    label: 'PAUSE NEW TRADES',
+    color: 'var(--amber)',
+    detail: 'Bot keeps syncing and managing open positions, but will not open new trades.',
+  },
+  stopped: {
+    label: 'STOP AUTOMATION',
+    color: 'var(--red)',
+    detail: 'Bot becomes observation-only. No automated entries or exits are placed.',
+  },
 }
 
 export function BotControlsPanel() {
-  const { status, mode, setStatus, setMode, countdownLabel, loopCount } = useBotStatus()
+  const {
+    status,
+    mode,
+    setStatus,
+    description,
+    workerStatus,
+    heartbeatLabel,
+    workerSummary,
+    strategySlug,
+    riskProfile,
+    maxPositions,
+    isConfigured,
+    mutationError,
+    isLoading,
+    isMutating,
+  } = useBotStatus()
 
   return (
-    <Panel title="BOT CONTROLS" tag="v2.1" accented style={{ gridColumn: 3, gridRow: 1 }}>
-      <div style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 9 }}>
-
-        {/* Action buttons */}
-        {(['paused', 'active', 'stopped'] as BotStatus[]).map((action) => {
-          const { label, color } = BTN_CONFIG[action]
-          const isActive = status === action
-          return (
-            <button
-              key={action}
-              onClick={() => setStatus(action)}
-              style={{
-                width: '100%',
-                padding: '10px 14px',
-                fontFamily: 'var(--font-display)',
-                fontSize: 17,
-                letterSpacing: '0.14em',
-                textTransform: 'uppercase',
-                border: `1px solid ${color}4d`,
-                background: isActive ? `${color}1a` : 'transparent',
-                color,
-                cursor: 'pointer',
-                transition: 'all 0.15s ease',
-                boxShadow: isActive ? `0 0 14px ${color}22` : 'none',
-              }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = `${color}1a` }}
-              onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = 'transparent' }}
-            >
-              {label}
-            </button>
-          )
-        })}
-
-        {/* Paper / Live toggle */}
-        <div style={{ display: 'flex', border: '1px solid var(--border)', marginTop: 4 }}>
-          {(['paper', 'live'] as const).map((m, i) => (
-            <button
-              key={m}
-              onClick={() => setMode(m)}
-              style={{
-                flex: 1,
-                padding: '7px 0',
-                fontFamily: 'var(--font-mono)',
-                fontSize: 10,
-                letterSpacing: '0.14em',
-                textTransform: 'uppercase',
-                cursor: 'pointer',
-                border: 'none',
-                borderRight: i === 0 ? '1px solid var(--border)' : 'none',
-                background: mode === m ? 'var(--amber-mid)' : 'transparent',
-                color: mode === m ? 'var(--amber)' : 'var(--text-muted)',
-                transition: 'all 0.15s',
-              }}
-            >
-              {m.toUpperCase()}
-            </button>
-          ))}
+    <Panel title="Bot Controls" tag={status.toUpperCase()} accented style={{ gridColumn: 3, gridRow: 1, display: 'flex', flexDirection: 'column' }}>
+      <div style={{ padding: 14, display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={{ padding: 14, background: 'var(--bg-panel-alt)', border: '1px solid var(--border)', borderRadius: 20 }}>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: 6 }}>
+            What the bot is doing
+          </div>
+          <div style={{ fontFamily: 'var(--font-display)', fontSize: 24, color: !isConfigured ? 'var(--amber)' : status === 'running' ? 'var(--green)' : status === 'paused' ? 'var(--amber)' : 'var(--red)', letterSpacing: '-0.04em' }}>
+            {!isConfigured ? 'SETUP REQUIRED' : status.toUpperCase()}
+          </div>
+          <div style={{ fontFamily: 'var(--font-ui)', fontSize: 13, color: 'var(--text-dim)', marginTop: 6, lineHeight: 1.45 }}>
+            {isLoading ? 'Loading bot state...' : !isConfigured ? 'Connect Alpaca in Settings before you can control automation.' : description}
+          </div>
+          <div style={{ marginTop: 6, fontFamily: 'var(--font-ui)', fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.4 }}>
+            {workerSummary}
+          </div>
+          {mutationError && (
+            <div style={{ marginTop: 8, fontFamily: 'var(--font-ui)', fontSize: 12, color: 'var(--red)', lineHeight: 1.4 }}>
+              {mutationError}
+            </div>
+          )}
         </div>
 
-        {/* Strategy */}
-        <div style={{ padding: 12, background: 'var(--bg-panel-alt)', border: '1px solid var(--border)', marginTop: 2 }}>
-          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '0.18em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: 5 }}>
-            ACTIVE STRATEGY
-          </div>
-          <div style={{ fontFamily: 'var(--font-display)', fontSize: 20, color: 'var(--amber)', letterSpacing: '0.06em' }}>
-            BALANCED
-          </div>
-          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-dim)', marginTop: 2 }}>
-            Trend-following · 12-gate pipeline
-          </div>
+        <div style={{ display: 'grid', gap: 10 }}>
+          {(['running', 'paused', 'stopped'] as BotState[]).map((action) => {
+            const { label, color, detail } = BTN_CONFIG[action]
+            const isActive = status === action
+            return (
+              <button
+                key={action}
+                onClick={() => setStatus(action)}
+                disabled={isMutating || isLoading || !isConfigured}
+                style={{
+                  width: '100%',
+                  padding: '12px 14px',
+                  fontFamily: 'var(--font-ui)',
+                  borderRadius: 22,
+                  border: `1px solid ${isActive ? color : 'rgba(255,255,255,0.08)'}`,
+                  background: isActive ? `${color}18` : 'rgba(255,255,255,0.04)',
+                  color: 'var(--text-primary)',
+                  cursor: isMutating || isLoading ? 'wait' : !isConfigured ? 'not-allowed' : 'pointer',
+                  transition: 'all 0.15s ease',
+                  boxShadow: isActive ? `0 0 14px ${color}22` : 'none',
+                  opacity: isMutating || isLoading ? 0.75 : !isConfigured ? 0.58 : 1,
+                  textAlign: 'left',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <span style={{
+                    width: 12,
+                    height: 12,
+                    borderRadius: '50%',
+                    background: isActive ? color : 'transparent',
+                    border: `2px solid ${isActive ? color : 'rgba(255,255,255,0.2)'}`,
+                    boxShadow: isActive ? `0 0 12px ${color}66` : 'none',
+                    flexShrink: 0,
+                  }} />
+                  <div style={{ fontFamily: 'var(--font-display)', fontSize: 18, letterSpacing: '-0.03em', color }}>{label}</div>
+                </div>
+                <div style={{ fontFamily: 'var(--font-ui)', fontSize: 12, color: 'var(--text-dim)', marginTop: 4, lineHeight: 1.4 }}>
+                  {detail}
+                </div>
+              </button>
+            )
+          })}
         </div>
 
-        {/* Countdown */}
-        <div style={{ marginTop: 4 }}>
-          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '0.16em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: 6 }}>
-            NEXT LOOP IN
+        <div style={{ padding: 14, background: 'var(--bg-panel-alt)', border: '1px solid var(--border)', borderRadius: 20 }}>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: 8 }}>
+            Account setup
           </div>
-          <div style={{ fontFamily: 'var(--font-display)', fontSize: 30, color: 'var(--text-dim)', letterSpacing: '0.06em' }}>
-            {countdownLabel}
+          <div style={{ display: 'grid', gap: 5, fontFamily: 'var(--font-ui)', fontSize: 13, color: 'var(--text-dim)' }}>
+            <div>Mode: {mode.toUpperCase()}</div>
+            <div>Strategy: {strategySlug.replace(/_/g, ' ')}</div>
+            <div>Risk profile: {riskProfile}</div>
+            <div>Max positions: {maxPositions ?? 'Not set yet'}</div>
           </div>
         </div>
 
-        {/* Loop counter */}
-        <div style={{ display: 'flex', gap: 7, fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--text-muted)', letterSpacing: '0.08em' }}>
-          <span>LOOP</span>
-          <strong style={{ color: 'var(--text-dim)', fontWeight: 500 }}>{loopCount.toLocaleString()}</strong>
+        <div style={{ padding: 14, background: 'var(--bg-panel-alt)', border: '1px solid var(--border)', borderRadius: 20 }}>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: 6 }}>
+            Sync health
+          </div>
+          <div style={{ fontFamily: 'var(--font-display)', fontSize: 20, color: workerStatus === 'unknown' ? 'var(--amber)' : 'var(--text-primary)', letterSpacing: '-0.04em' }}>
+            {workerStatus.toUpperCase()}
+          </div>
+          <div style={{ fontFamily: 'var(--font-ui)', fontSize: 13, color: 'var(--text-dim)', marginTop: 6, lineHeight: 1.4 }}>
+            Last heartbeat: {heartbeatLabel}
+          </div>
         </div>
       </div>
     </Panel>

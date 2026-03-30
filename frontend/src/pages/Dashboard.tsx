@@ -1,3 +1,4 @@
+import { DashboardHero } from '@/components/panels/DashboardHero'
 import { PortfolioPanel }  from '@/components/panels/PortfolioPanel'
 import { PositionsPanel }  from '@/components/panels/PositionsPanel'
 import { BotControlsPanel } from '@/components/panels/BotControlsPanel'
@@ -7,20 +8,16 @@ import { GateLogPanel }    from '@/components/panels/GateLogPanel'
 
 export function Dashboard() {
   return (
-    <div style={{
-      display: 'grid',
-      gridTemplateColumns: '360px 1fr 240px',
-      gridTemplateRows: 'auto auto auto',
-      gap: 12,
-      marginTop: 14,
-      flex: 1,
-    }}>
-      <PortfolioPanel />
-      <PositionsPanel />
-      <BotControlsPanel />
-      <RiskCapsPanel />
-      <TradesPanel />
-      <GateLogPanel />
-    </div>
+    <>
+      <DashboardHero />
+      <div className="dashboard-grid" style={{ gridTemplateColumns: 'minmax(300px, 0.92fr) minmax(0, 1.3fr) minmax(280px, 0.88fr)', gridTemplateRows: 'auto auto' }}>
+        <PortfolioPanel />
+        <PositionsPanel />
+        <BotControlsPanel />
+        <RiskCapsPanel />
+        <TradesPanel />
+        <GateLogPanel />
+      </div>
+    </>
   )
 }

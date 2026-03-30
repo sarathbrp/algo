@@ -31,10 +31,22 @@ export function usePortfolio() {
     staleTime: 30_000,
   })
 
+  const { data: positions } = useQuery({
+    queryKey: ['positions', userId],
+    queryFn: () => api.positions(userId!),
+    enabled: !!userId,
+    staleTime: 10_000,
+    refetchInterval: 15_000,
+  })
+
   const snap = portfolio?.latest
   const equity = snap?.equity ?? 0
   const dayPnl = snap?.daily_pnl ?? 0
   const dayPnlPct = snap?.daily_pnl_pct ?? 0
+  const unrealized = (positions ?? []).reduce((sum, pos) => sum + (pos.unrealized_pnl ?? 0), 0)
+  const history = portfolio?.history ?? []
+  const baselineEquity = history.length > 0 ? (history[0]?.equity ?? equity) : equity
+  const totalReturn = baselineEquity > 0 ? ((equity - baselineEquity) / baselineEquity) * 100 : 0
 
   const winTrades = trades?.filter((t) => (t.pnl ?? 0) > 0) ?? []
   const totalTrades = trades?.length ?? 0
@@ -44,8 +56,8 @@ export function usePortfolio() {
     equity,
     dayPnl,
     dayPnlPct,
-    unrealized: 0,
-    totalReturn: 0,
+    unrealized,
+    totalReturn,
     winRate,
     winCount: winTrades.length,
     totalTrades,
@@ -60,7 +72,7 @@ export function usePortfolio() {
       }
     : FALLBACK_REGIME
 
-  const equityHistory = (portfolio?.history ?? []).map((s) => s.equity ?? 0)
+  const equityHistory = history.map((s) => s.equity ?? 0)
 
   return { stats, regime: regimeOut, equityHistory, isLoading: portfolioLoading }
 }

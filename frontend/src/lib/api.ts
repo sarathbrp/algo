@@ -80,6 +80,7 @@ export interface PositionOut {
   side: string
   qty: number
   avg_entry_price: number | null
+  last_buy_price: number | null
   current_price: number | null
   unrealized_pnl: number | null
   stop_pct: number | null
@@ -125,11 +126,32 @@ export interface UserSummary {
   equity: number | null
 }
 
+export type BotState = 'running' | 'paused' | 'stopped'
+
+export interface AccountSettingsOut {
+  broker_account_id: number
+  paper: boolean
+  trading_enabled: boolean
+  bot_state: BotState
+  bot_state_description: string
+  strategy_slug: string
+  risk_profile: string
+  max_positions: number | null
+  worker_status: string | null
+  worker_current_user_id: string | null
+  worker_last_heartbeat: string | null
+  worker_last_reconciled_at: string | null
+}
+
 export interface OnboardRequest {
   alpaca_key: string
   alpaca_secret: string
   paper: boolean
   risk_profile: string
+}
+
+export interface BotControlUpdate {
+  bot_state: BotState
 }
 
 export async function onboard(userId: string, data: OnboardRequest): Promise<void> {
@@ -151,6 +173,12 @@ export const api = {
 
   regime: (userId: string) =>
     apiClient.get<RegimeOut | null>(`/api/users/${userId}/regime`).then(r => r.data),
+
+  accountSettings: (userId: string) =>
+    apiClient.get<AccountSettingsOut | null>(`/api/users/${userId}/account-settings`).then(r => r.data),
+
+  updateBotControl: (userId: string, data: BotControlUpdate) =>
+    apiClient.patch<AccountSettingsOut>(`/api/users/${userId}/bot-control`, data).then(r => r.data),
 
   adminUsers: () =>
     apiClient.get<UserSummary[]>('/api/admin/users').then(r => r.data),

@@ -19,13 +19,14 @@ export function usePositions(): { positions: Position[]; isLoading: boolean } {
     side: p.side as 'long' | 'short',
     shares: p.qty,
     entryPrice: p.avg_entry_price ?? 0,
+    lastBuyPrice: p.last_buy_price ?? null,
     currentPrice: p.current_price ?? 0,
     unrealizedPnl: p.unrealized_pnl ?? 0,
     returnPct: p.avg_entry_price
       ? ((( p.current_price ?? 0) - p.avg_entry_price) / p.avg_entry_price) * 100
       : 0,
-    barsHeld: 0,   // not tracked in DB yet
-    atrPct: 0,     // not tracked in DB yet
+    stopPct: p.stop_pct ?? null,
+    partialTaken: p.partial_taken,
   }))
 
   return { positions, isLoading }

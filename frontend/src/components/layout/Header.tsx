@@ -1,26 +1,19 @@
 import { useEffect, useState } from 'react'
 import { NavLink, useNavigate } from 'react-router-dom'
-import { useBotStore } from '@/store/botStore'
+import { useBotStatus } from '@/hooks/useBotStatus'
+import { useRegime } from '@/hooks/useRegime'
 import { useThemeStore, resolveTheme } from '@/store/themeStore'
 import { useAuthStore } from '@/store/authStore'
 import { UserSwitcher } from './UserSwitcher'
-import type { RegimeScores } from '@/types'
-
-const MOCK_REGIME: RegimeScores = {
-  label: 'bullish',
-  spy: 0.72,
-  qqq: 0.68,
-  vix: 14.2,
-}
 
 const STATUS_LABELS: Record<string, string> = {
-  active: 'ACTIVE',
+  running: 'RUNNING',
   paused: 'PAUSED',
   stopped: 'STOPPED',
 }
 
 const STATUS_COLORS: Record<string, string> = {
-  active:  'var(--amber)',
+  running: 'var(--green)',
   paused:  'var(--amber)',
   stopped: 'var(--red)',
 }
@@ -52,15 +45,20 @@ function useEstClock() {
 }
 
 export function Header() {
-  const { status, mode, loopCount } = useBotStore()
+  const { status, mode } = useBotStatus()
+  const { regime } = useRegime()
   const { mode: themeMode, setMode: setThemeMode } = useThemeStore()
   const { userId, role, paper, logout } = useAuthStore()
   const navigate = useNavigate()
   const clock = useEstClock()
-  const regime = MOCK_REGIME
   const statusColor = STATUS_COLORS[status]
 
   const resolvedTheme = resolveTheme(themeMode)
+  const mutedText = resolvedTheme === 'light' ? '#51607b' : 'var(--text-muted)'
+  const navText = resolvedTheme === 'light' ? '#33415c' : 'var(--text-muted)'
+  const headerSurface = resolvedTheme === 'light'
+    ? 'linear-gradient(135deg, rgba(255,255,255,0.96), rgba(255,246,239,0.96))'
+    : 'linear-gradient(135deg, rgba(255,255,255,0.06), rgba(255,255,255,0.02))'
 
   function handleLogout() {
     logout()
@@ -81,36 +79,46 @@ export function Header() {
       position: 'relative',
       display: 'flex',
       alignItems: 'center',
-      padding: '14px 20px',
-      borderBottom: '1px solid var(--border)',
+      padding: '18px 20px 12px',
       gap: 0,
       zIndex: 10,
+      maxWidth: 1540,
+      width: '100%',
+      margin: '0 auto',
     }}>
-      {/* amber underline accent */}
       <div style={{
         position: 'absolute',
-        bottom: -1,
+        inset: '8px 20px 0',
+        borderRadius: 28,
+        background: headerSurface,
+        border: resolvedTheme === 'light' ? '1px solid rgba(31,44,82,0.12)' : '1px solid rgba(255,255,255,0.08)',
+        backdropFilter: resolvedTheme === 'light' ? 'none' : 'blur(18px)',
+        boxShadow: 'var(--surface-shadow)',
+        zIndex: -1,
+      }} />
+      <div style={{
+        position: 'absolute',
+        bottom: 0,
         left: 20,
-        width: 320,
-        height: 1,
-        background: 'linear-gradient(90deg, var(--amber) 0%, transparent 100%)',
+        width: 260,
+        height: 3,
+        borderRadius: 999,
+        background: 'linear-gradient(90deg, var(--amber) 0%, var(--violet) 100%)',
       }} />
 
-      {/* Logo */}
       <div style={{
         fontFamily: 'var(--font-display)',
-        fontSize: 26,
-        letterSpacing: '0.08em',
+        fontSize: 24,
+        letterSpacing: '-0.04em',
         color: 'var(--amber)',
-        marginRight: 28,
-        textShadow: '0 0 24px rgba(255,179,0,0.4)',
+        marginRight: 24,
+        textShadow: '0 0 22px rgba(255,107,61,0.22)',
         lineHeight: 1,
         flexShrink: 0,
       }}>
-        ALGO<span style={{ color: 'var(--text-dim)' }}>SPHERE</span>
+        Algo<span style={{ color: 'var(--text-primary)' }}>Sphere</span>
       </div>
 
-      {/* Status pill */}
       <div style={{
         display: 'flex',
         alignItems: 'center',
@@ -118,11 +126,12 @@ export function Header() {
         fontFamily: 'var(--font-mono)',
         fontSize: 10,
         fontWeight: 500,
-        letterSpacing: '0.12em',
+        letterSpacing: '0.08em',
         textTransform: 'uppercase',
-        padding: '4px 10px',
-        border: `1px solid ${statusColor}4d`,
-        background: `${statusColor}14`,
+        padding: '7px 12px',
+        border: `1px solid ${statusColor}33`,
+        borderRadius: 999,
+        background: `${statusColor}18`,
         color: statusColor,
         flexShrink: 0,
       }}>
@@ -132,16 +141,14 @@ export function Header() {
           borderRadius: '50%',
           background: statusColor,
           flexShrink: 0,
-          animation: status === 'active' ? 'pulse-dot 2s ease-in-out infinite' : 'none',
+          animation: status === 'running' ? 'pulse-dot 2s ease-in-out infinite' : 'none',
         }} />
         {mode.toUpperCase()} · {STATUS_LABELS[status]}
       </div>
 
-      {/* Divider */}
-      <div style={{ width: 1, height: 26, background: 'var(--border)', margin: '0 18px', flexShrink: 0 }} />
+      <div style={{ width: 1, height: 26, background: 'rgba(255,255,255,0.08)', margin: '0 18px', flexShrink: 0 }} />
 
-      {/* Nav links */}
-      <nav style={{ display: 'flex', gap: 2, marginRight: 18 }}>
+      <nav style={{ display: 'flex', gap: 6, marginRight: 18 }}>
         {[
           { to: '/dashboard', label: 'DASHBOARD' },
           { to: '/trades',    label: 'TRADES' },
@@ -152,13 +159,18 @@ export function Header() {
             to={to}
             style={({ isActive }) => ({
               fontFamily: 'var(--font-mono)',
-              fontSize: 9,
-              letterSpacing: '0.18em',
+              fontSize: 10,
+              letterSpacing: '0.08em',
               textTransform: 'uppercase',
-              padding: '4px 10px',
-              color: isActive ? 'var(--amber)' : 'var(--text-muted)',
-              background: isActive ? 'var(--amber-dim)' : 'transparent',
-              border: `1px solid ${isActive ? 'var(--amber-dim)' : 'transparent'}`,
+              padding: '7px 12px',
+              color: isActive ? 'var(--text-primary)' : navText,
+              background: isActive
+                ? (resolvedTheme === 'light' ? 'rgba(23,32,51,0.08)' : 'rgba(255,255,255,0.08)')
+                : 'transparent',
+              border: `1px solid ${isActive
+                ? (resolvedTheme === 'light' ? 'rgba(31,44,82,0.12)' : 'rgba(255,255,255,0.12)')
+                : 'transparent'}`,
+              borderRadius: 999,
               textDecoration: 'none',
               transition: 'all 0.15s',
             })}
@@ -168,12 +180,10 @@ export function Header() {
         ))}
       </nav>
 
-      {/* Divider */}
-      <div style={{ width: 1, height: 26, background: 'var(--border)', margin: '0 18px', flexShrink: 0 }} />
+      <div style={{ width: 1, height: 26, background: 'rgba(255,255,255,0.08)', margin: '0 18px', flexShrink: 0 }} />
 
-      {/* Regime badge */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0 }}>
-        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '0.16em', textTransform: 'uppercase', color: 'var(--text-dim)' }}>
+        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '0.16em', textTransform: 'uppercase', color: mutedText }}>
           REGIME
         </span>
         <span style={{
@@ -182,46 +192,21 @@ export function Header() {
           fontWeight: 500,
           letterSpacing: '0.1em',
           textTransform: 'uppercase',
-          color: REGIME_COLORS[regime.label],
+          color: REGIME_COLORS[regime?.label ?? 'neutral'],
         }}>
-          {regime.label.toUpperCase()}
+          {(regime?.label ?? 'neutral').toUpperCase()}
         </span>
       </div>
 
-      {/* Regime scores */}
-      <div style={{ display: 'flex', gap: 14, marginLeft: 14, flexShrink: 0 }}>
-        {[
-          { ticker: 'SPY', value: `${regime.spy > 0 ? '+' : ''}${regime.spy.toFixed(2)}` },
-          { ticker: 'QQQ', value: `${regime.qqq > 0 ? '+' : ''}${regime.qqq.toFixed(2)}` },
-          { ticker: 'VIX', value: regime.vix.toFixed(1) },
-        ].map(({ ticker, value }) => (
-          <div key={ticker} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 2 }}>
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 8, color: 'var(--text-muted)', letterSpacing: '0.08em' }}>
-              {ticker}
-            </span>
-            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-dim)' }}>
-              {value}
-            </span>
-          </div>
-        ))}
-      </div>
-
-      {/* Admin user switcher */}
       {role === 'admin' && (
         <>
-          <div style={{ width: 1, height: 26, background: 'var(--border)', margin: '0 12px', flexShrink: 0 }} />
+          <div style={{ width: 1, height: 26, background: 'rgba(255,255,255,0.08)', margin: '0 12px', flexShrink: 0 }} />
           <UserSwitcher />
         </>
       )}
 
-      {/* Right meta */}
-      <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 20, flexShrink: 0 }}>
-        <div style={{ display: 'flex', gap: 6, fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--text-muted)', letterSpacing: '0.08em' }}>
-          <span>LOOP</span>
-          <strong style={{ color: 'var(--text-dim)', fontWeight: 500 }}>{loopCount.toLocaleString()}</strong>
-        </div>
+      <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 14, flexShrink: 0 }}>
 
-        {/* Theme toggle */}
         <button
           onClick={cycleTheme}
           title={`Theme: ${themeMode} — click to cycle`}
@@ -230,13 +215,14 @@ export function Header() {
             alignItems: 'center',
             gap: 5,
             fontFamily: 'var(--font-mono)',
-            fontSize: 9,
-            letterSpacing: '0.14em',
+            fontSize: 10,
+            letterSpacing: '0.08em',
             textTransform: 'uppercase',
-            padding: '4px 9px',
-            border: '1px solid var(--border)',
-            background: 'transparent',
-            color: 'var(--text-muted)',
+            padding: '7px 10px',
+            border: '1px solid rgba(255,255,255,0.12)',
+            background: 'rgba(255,255,255,0.04)',
+            borderRadius: 999,
+            color: mutedText,
             cursor: 'pointer',
             transition: 'all 0.15s',
             flexShrink: 0,
@@ -246,21 +232,21 @@ export function Header() {
             e.currentTarget.style.color = 'var(--amber)'
           }}
           onMouseLeave={(e) => {
-            e.currentTarget.style.borderColor = 'var(--border)'
-            e.currentTarget.style.color = 'var(--text-muted)'
+            e.currentTarget.style.borderColor = resolvedTheme === 'light' ? 'rgba(31,44,82,0.12)' : 'var(--border)'
+            e.currentTarget.style.color = mutedText
           }}
         >
           <span style={{ fontSize: 11 }}>{themeIcon}</span>
           {themeLabel}
         </button>
 
-        {/* User pill + logout */}
         {userId && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <div style={{
-              fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '0.1em',
+              fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.05em',
               textTransform: 'uppercase', color: 'var(--text-dim)',
-              padding: '3px 8px', border: '1px solid var(--border)',
+              padding: '7px 10px', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 999,
+              background: 'rgba(255,255,255,0.05)',
             }}>
               {role === 'admin' ? '★ ' : ''}{userId}{paper ? ' · PAPER' : ' · LIVE'}
             </div>
@@ -268,13 +254,13 @@ export function Header() {
               onClick={handleLogout}
               title="Sign out"
               style={{
-                fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '0.14em',
-                textTransform: 'uppercase', padding: '3px 8px',
-                border: '1px solid var(--border)', background: 'transparent',
-                color: 'var(--text-muted)', cursor: 'pointer',
+                fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.08em',
+                textTransform: 'uppercase', padding: '7px 10px',
+                border: '1px solid rgba(255,255,255,0.12)', background: 'rgba(255,255,255,0.04)', borderRadius: 999,
+                color: mutedText, cursor: 'pointer',
               }}
               onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'var(--red)'; e.currentTarget.style.color = 'var(--red)' }}
-              onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-muted)' }}
+              onMouseLeave={(e) => { e.currentTarget.style.borderColor = resolvedTheme === 'light' ? 'rgba(31,44,82,0.12)' : 'var(--border)'; e.currentTarget.style.color = mutedText }}
             >
               OUT
             </button>

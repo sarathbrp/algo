@@ -1,4 +1,16 @@
-export function RegimeRadar() {
+import type { RegimeScores } from '@/types'
+
+function clamp(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value))
+}
+
+export function RegimeRadar({ regime }: { regime: RegimeScores }) {
+  // spy/qqq scores are (close - MA) / MA, typically -0.15 to +0.15; scale by 10x for radar
+  const spyY = 40 - clamp(regime.spy * 10, -1, 1) * 18
+  const qqqX = 40 + clamp(regime.qqq * 10, -1, 1) * 18
+  // vix is the raw level (e.g. 25); divide by 40 to normalize
+  const vixY = 58 - clamp(regime.vix / 40, 0, 1.5) * 18
+
   return (
     <svg
       width={80}
@@ -29,9 +41,9 @@ export function RegimeRadar() {
       </g>
 
       {/* Blips */}
-      <circle cx={52} cy={24} r={2.5} fill="#00D48B" style={{ animation: 'blip-fade 4s ease-in-out 0.5s infinite' }} />
-      <circle cx={28} cy={32} r={1.8} fill="#00D48B" style={{ animation: 'blip-fade 4s ease-in-out 1.2s infinite' }} />
-      <circle cx={58} cy={48} r={2.0} fill="#FFB300" style={{ animation: 'blip-fade 4s ease-in-out 2.1s infinite' }} />
+      <circle cx={26} cy={spyY} r={2.5} fill="#00D48B" style={{ animation: 'blip-fade 4s ease-in-out 0.5s infinite' }} />
+      <circle cx={qqqX} cy={24} r={1.8} fill="#00D48B" style={{ animation: 'blip-fade 4s ease-in-out 1.2s infinite' }} />
+      <circle cx={56} cy={vixY} r={2.0} fill="#FFB300" style={{ animation: 'blip-fade 4s ease-in-out 2.1s infinite' }} />
     </svg>
   )
 }

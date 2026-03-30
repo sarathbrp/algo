@@ -13,53 +13,61 @@ export function Panel({ title, tag, accented, children, style }: PanelProps) {
     <div style={{
       background: 'var(--bg-panel)',
       border: '1px solid var(--border)',
+      borderRadius: 28,
       position: 'relative',
       overflow: 'hidden',
       animation: 'panel-enter 0.5s ease both',
+      backdropFilter: 'blur(18px)',
+      boxShadow: 'var(--surface-shadow)',
       ...style,
     }}>
-      {/* Amber top-edge accent */}
       {accented && (
         <div aria-hidden style={{
           position: 'absolute',
-          top: 0,
-          left: 0,
-          right: 0,
-          height: 1,
-          background: 'linear-gradient(90deg, var(--amber) 0%, transparent 60%)',
+          inset: 0,
+          background: 'linear-gradient(135deg, var(--amber-dim) 0%, transparent 34%, var(--violet-dim) 100%)',
           zIndex: 1,
+          pointerEvents: 'none',
         }} />
       )}
 
-      {/* Subtle line grain */}
       <div aria-hidden style={{
         position: 'absolute',
         inset: 0,
-        background: 'repeating-linear-gradient(0deg, rgba(255,255,255,0.012) 0px, rgba(255,255,255,0.012) 1px, transparent 1px, transparent 4px)',
+        background: 'linear-gradient(180deg, rgba(255,255,255,0.08), transparent 24%)',
         pointerEvents: 'none',
       }} />
 
-      {/* Header */}
       <div style={{
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'space-between',
-        padding: '9px 16px 8px',
-        borderBottom: '1px solid var(--border)',
+        padding: '14px 18px 12px',
+        borderBottom: '1px solid rgba(255,255,255,0.08)',
         position: 'relative',
         zIndex: 1,
       }}>
-        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, fontWeight: 500, letterSpacing: '0.2em', textTransform: 'uppercase', color: 'var(--text-muted)' }}>
+        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 500, letterSpacing: '0.18em', textTransform: 'uppercase', color: 'var(--text-muted)' }}>
           {title}
         </span>
         {tag && (
-          <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, letterSpacing: '0.12em', textTransform: 'uppercase', color: 'var(--amber)', opacity: 0.6 }}>
+          <span style={{
+            fontFamily: 'var(--font-mono)',
+            fontSize: 10,
+            letterSpacing: '0.08em',
+            textTransform: 'uppercase',
+            color: 'var(--text-primary)',
+            background: 'rgba(255,255,255,0.08)',
+            border: '1px solid rgba(255,255,255,0.12)',
+            borderRadius: 999,
+            padding: '4px 10px',
+            boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.08)',
+          }}>
             {tag}
           </span>
         )}
       </div>
 
-      {/* Content */}
       <div style={{ position: 'relative', zIndex: 1 }}>
         {children}
       </div>

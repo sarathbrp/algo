@@ -3,7 +3,7 @@ import { api } from '@/lib/api'
 import { useViewingUserId } from '@/store/sessionStore'
 import type { GateLogEntry } from '@/types'
 
-export function useGateLog(limit = 12): { entries: GateLogEntry[]; isLoading: boolean } {
+export function useGateLog(limit = 20): { entries: GateLogEntry[]; isLoading: boolean } {
   const userId = useViewingUserId()
 
   const { data, isLoading } = useQuery({
@@ -15,7 +15,7 @@ export function useGateLog(limit = 12): { entries: GateLogEntry[]; isLoading: bo
   })
 
   const entries: GateLogEntry[] = (data ?? []).map((g) => {
-    const loggedAt = new Date(g.logged_at)
+    const loggedAt = new Date(g.logged_at.endsWith('Z') ? g.logged_at : g.logged_at + 'Z')
     const time = loggedAt.toLocaleTimeString('en-US', {
       timeZone: 'America/New_York',
       hour12: false,
@@ -25,7 +25,8 @@ export function useGateLog(limit = 12): { entries: GateLogEntry[]; isLoading: bo
     return {
       id: String(g.id),
       time,
-      symbol: g.symbol ?? g.gate,
+      type: g.gate,
+      symbol: g.symbol ?? (g.gate === 'entry' ? '' : ''),
       message: g.reason ?? (g.passed ? `${g.gate}: passed` : `${g.gate}: blocked`),
     }
   })

@@ -26,13 +26,13 @@ export function useTrades(): { trades: Trade[]; isLoading: boolean } {
   })
 
   const trades: Trade[] = (data ?? []).map((t) => {
-    const exitedAt = t.exited_at ? new Date(t.exited_at) : null
-    const enteredAt = t.entered_at ? new Date(t.entered_at) : null
+    const exitedAt = t.exited_at ? new Date(t.exited_at.endsWith('Z') ? t.exited_at : t.exited_at + 'Z') : null
+    const enteredAt = t.entered_at ? new Date(t.entered_at.endsWith('Z') ? t.entered_at : t.entered_at + 'Z') : null
     const barsHeld = exitedAt && enteredAt
       ? Math.max(0, Math.round((exitedAt.getTime() - enteredAt.getTime()) / 86_400_000))
       : 0
     const timeLabel = exitedAt
-      ? exitedAt.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
+      ? exitedAt.toLocaleTimeString('en-US', { timeZone: 'America/New_York', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
       : '--:--:--'
 
     return {

@@ -3,11 +3,12 @@ export interface Position {
   side: 'long' | 'short'
   shares: number
   entryPrice: number
+  lastBuyPrice: number | null
   currentPrice: number
   unrealizedPnl: number
   returnPct: number
-  barsHeld: number
-  atrPct: number
+  stopPct: number | null
+  partialTaken: boolean
 }
 
 export interface Trade {
@@ -26,6 +27,7 @@ export interface Trade {
 export interface GateLogEntry {
   id: string
   time: string
+  type: string
   symbol: string
   message: string
 }

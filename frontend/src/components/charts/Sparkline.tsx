@@ -1,6 +1,5 @@
-import { useEffect, useRef, useState } from 'react'
+import { useMemo } from 'react'
 
-const INITIAL_POINTS = [38, 36, 35, 33, 34, 31, 28, 26, 25, 22, 20, 18, 16, 14, 12, 10, 8, 9, 7, 6, 4]
 const WIDTH = 320
 const HEIGHT = 48
 
@@ -14,28 +13,21 @@ function buildPath(points: number[]) {
   return { line, fill, lastX, lastY: points[points.length - 1] }
 }
 
-export function Sparkline() {
-  const [points, setPoints] = useState(INITIAL_POINTS)
-  const [flash, setFlash] = useState(false)
-  const prevLen = useRef(points.length)
+function normalizePoints(points: number[]): number[] {
+  if (points.length <= 1) return [HEIGHT / 2, HEIGHT / 2]
+  const min = Math.min(...points)
+  const max = Math.max(...points)
+  if (min === max) return points.map(() => HEIGHT / 2)
+  const range = max - min
+  return points.map((point) => {
+    const pct = (point - min) / range
+    return HEIGHT - 4 - pct * (HEIGHT - 8)
+  })
+}
 
-  useEffect(() => {
-    const id = setInterval(() => {
-      setPoints((prev) => {
-        const last = prev[prev.length - 1]
-        const next = Math.max(2, Math.min(HEIGHT - 2, last + (Math.random() - 0.48) * 3))
-        const updated = [...prev.slice(-23), next]
-        return updated
-      })
-      setFlash(true)
-      setTimeout(() => setFlash(false), 400)
-    }, 3000)
-    return () => clearInterval(id)
-  }, [])
-
-  prevLen.current = points.length
-
-  const { line, fill, lastX = WIDTH, lastY = 4 } = buildPath(points)
+export function Sparkline({ points }: { points: number[] }) {
+  const normalized = useMemo(() => normalizePoints(points), [points])
+  const { line, fill, lastX = WIDTH, lastY = HEIGHT / 2 } = buildPath(normalized)
 
   return (
     <svg
@@ -54,10 +46,9 @@ export function Sparkline() {
       <path
         d={line}
         fill="none"
-        stroke={flash ? '#FFC940' : '#FFB300'}
+        stroke="#FFB300"
         strokeWidth={1.5}
         strokeLinejoin="round"
-        style={{ transition: 'stroke 0.4s ease' }}
       />
       <circle cx={lastX} cy={lastY} r={3} fill="#FFB300" opacity={0.9}>
         <animate attributeName="r" values="3;5;3" dur="2s" repeatCount="indefinite" />

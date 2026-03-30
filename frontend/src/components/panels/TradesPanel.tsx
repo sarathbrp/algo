@@ -60,18 +60,25 @@ export function TradesPanel() {
       title="RECENT TRADES"
       tag={`TODAY · ${trades.length} FILLS`}
       accented
-      style={{ gridColumn: '1 / 3', gridRow: 3 }}
+      style={{ gridColumn: 2, gridRow: 2, minHeight: 160 }}
     >
       <div style={{ overflowX: 'auto' }}>
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
             <tr>
-              {['TIME', 'SYMBOL', 'SIDE', 'SHARES', 'ENTRY', 'EXIT', 'P&L', 'RETURN', 'EXIT REASON', 'BARS'].map((h, i) => (
+              {['TIME', 'SYMBOL', 'SIDE', 'SHARES', 'ENTRY', 'EXIT', 'P&L', 'RETURN', 'EXIT REASON', 'HELD DAYS'].map((h, i) => (
                 <th key={h} style={{ ...TH, textAlign: i <= 1 ? 'left' : 'right' }}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
+            {trades.length === 0 && (
+              <tr>
+                <td colSpan={10} style={{ ...TD, textAlign: 'left', color: 'var(--text-dim)', padding: '14px 14px' }}>
+                  No recent trades.
+                </td>
+              </tr>
+            )}
             {trades.map((t) => (
               <tr
                 key={`${t.time}-${t.symbol}`}
