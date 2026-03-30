@@ -3,10 +3,10 @@ import { api } from '@/lib/api'
 import { useViewingUserId } from '@/store/sessionStore'
 import type { Position } from '@/types'
 
-export function usePositions(): { positions: Position[]; isLoading: boolean } {
+export function usePositions(): { positions: Position[]; isLoading: boolean; updatedAt: number } {
   const userId = useViewingUserId()
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, dataUpdatedAt } = useQuery({
     queryKey: ['positions', userId],
     queryFn: () => api.positions(userId!),
     enabled: !!userId,
@@ -29,5 +29,5 @@ export function usePositions(): { positions: Position[]; isLoading: boolean } {
     partialTaken: p.partial_taken,
   }))
 
-  return { positions, isLoading }
+  return { positions, isLoading, updatedAt: dataUpdatedAt }
 }

@@ -158,6 +158,27 @@ export async function onboard(userId: string, data: OnboardRequest): Promise<voi
   await apiClient.put(`/api/users/${userId}/onboard`, data)
 }
 
+export interface QuoteOut {
+  symbol: string
+  bid: number
+  ask: number
+  mid: number
+  spread_pct: number
+  timestamp: string
+  source: string
+  stale: boolean
+}
+
+export interface QuotesOut {
+  feed_status: string | null
+  feed_timestamp: string | null
+  quotes: QuoteOut[]
+}
+
+export interface WatchlistOut {
+  symbols: string[]
+}
+
 export const api = {
   portfolio: (userId: string, historyLimit = 100) =>
     apiClient.get<PortfolioOut>(`/api/users/${userId}/portfolio?history_limit=${historyLimit}`).then(r => r.data),
@@ -179,6 +200,15 @@ export const api = {
 
   updateBotControl: (userId: string, data: BotControlUpdate) =>
     apiClient.patch<AccountSettingsOut>(`/api/users/${userId}/bot-control`, data).then(r => r.data),
+
+  quotes: (userId: string, symbols: string[]) =>
+    apiClient.get<QuotesOut>(`/api/users/${userId}/quotes`, { params: { symbols } }).then(r => r.data),
+
+  watchlist: (userId: string) =>
+    apiClient.get<WatchlistOut>(`/api/users/${userId}/watchlist`).then(r => r.data),
+
+  updateWatchlist: (userId: string, symbols: string[]) =>
+    apiClient.put<WatchlistOut>(`/api/users/${userId}/watchlist`, { symbols }).then(r => r.data),
 
   adminUsers: () =>
     apiClient.get<UserSummary[]>('/api/admin/users').then(r => r.data),

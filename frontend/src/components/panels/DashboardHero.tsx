@@ -13,7 +13,17 @@ function pctColor(pct: number) {
 export function DashboardHero() {
   const { status, mode, workerStatus, heartbeatLabel, workerSummary, isConfigured } = useBotStatus()
   const { stats, regime } = usePortfolio()
-  const { positions } = usePositions()
+  const { positions, updatedAt } = usePositions()
+
+  const lastUpdated = updatedAt
+    ? new Date(updatedAt).toLocaleTimeString('en-US', {
+        timeZone: 'America/New_York',
+        hour12: false,
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+      })
+    : null
 
   const headline = !isConfigured
     ? 'Connect your broker and turn on automation.'
@@ -135,8 +145,15 @@ export function DashboardHero() {
         gap: 0,
         overflow: 'hidden',
       }}>
-        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: 12 }}>
-          Live Tickers
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--text-muted)' }}>
+            Live Tickers
+          </div>
+          {lastUpdated && (
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--text-muted)' }}>
+              {lastUpdated} ET
+            </div>
+          )}
         </div>
 
         {positions.length === 0 ? (

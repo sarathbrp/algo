@@ -240,7 +240,7 @@ def _get_live_broker(session, user_id: str) -> Any | None:
             return None
         broker_account = account_repo.get_broker_account_for_user(session, user_id)
         paper = bool(broker_account.paper) if broker_account else True
-        return AlpacaBroker(api_key=key, api_secret=secret, paper=paper)
+        return AlpacaBroker(api_key=key, secret=secret, paper=paper)
     except Exception as exc:
         _logger.debug("Live broker init failed for %s: %s", user_id, exc)
         return None
@@ -432,25 +432,113 @@ def get_quotes(
 ) -> QuotesOut:
     _check_access(current_user, user_id)
     cache = _get_quote_cache(request)
-    if cache is None:
-        return QuotesOut(feed_status=None, feed_timestamp=None, quotes=[])
 
     normalized_symbols = [str(symbol).strip().upper() for symbol in symbols if str(symbol).strip()]
     if not normalized_symbols:
         normalized_symbols = [p.symbol.upper() for p in portfolio_repo.get_positions(session, user_id)]
 
-    feed_status, feed_ts = cache.get_feed_status()
+    feed_status = None
+    feed_ts = None
     quotes = []
-    for symbol in normalized_symbols:
-        quote = cache.get_quote(symbol)
-        if quote is not None:
-            quotes.append(_quote_to_out(quote))
+
+    # Try Redis cache first
+    if cache is not None:
+        feed_status, feed_ts = cache.get_feed_status()
+        for symbol in normalized_symbols:
+            quote = cache.get_quote(symbol)
+            if quote is not None:
+                quotes.append(_quote_to_out(quote))
+
+    # For symbols not in cache, try live broker
+    cached_symbols = {q.symbol for q in quotes}
+    missing = [s for s in normalized_symbols if s not in cached_symbols]
+    if missing:
+        broker = _get_live_broker(session, user_id)
+        if broker:
+            from datetime import datetime, timezone
+            for symbol in missing:
+                try:
+                    q = broker.get_latest_quote(symbol)
+                    if q is not None:
+                        quotes.append(QuoteOut(
+                            symbol=symbol,
+                            bid=float(q.bid),
+                            ask=float(q.ask),
+                            mid=float(q.mid),
+                            spread_pct=float(q.spread_pct),
+                            timestamp=(q.timestamp or datetime.now(timezone.utc)).isoformat(),
+                            source="alpaca",
+                            stale=False,
+                        ))
+                except Exception:
+                    pass
 
     return QuotesOut(
-        feed_status=feed_status,
+        feed_status=feed_status if feed_status else ("OK" if quotes else None),
         feed_timestamp=feed_ts.isoformat() if feed_ts is not None else None,
         quotes=quotes,
     )
+
+
+# ---------------------------------------------------------------------------
+# Watchlist
+# ---------------------------------------------------------------------------
+
+class WatchlistOut(BaseModel):
+    symbols: list[str]
+
+
+class WatchlistUpdate(BaseModel):
+    symbols: list[str]
+
+
+@router.get("/watchlist", response_model=WatchlistOut)
+def get_watchlist(
+    user_id: str,
+    session: DbSession,
+    current_user: CurrentUser,
+) -> WatchlistOut:
+    _check_access(current_user, user_id)
+    settings = account_repo.get_user_settings(session, user_id)
+    if settings is None or not settings.dashboard_layout:
+        return WatchlistOut(symbols=[])
+    import json
+    try:
+        layout = json.loads(settings.dashboard_layout)
+        return WatchlistOut(symbols=layout.get("watchlist", []))
+    except (json.JSONDecodeError, AttributeError):
+        return WatchlistOut(symbols=[])
+
+
+@router.put("/watchlist", response_model=WatchlistOut)
+def update_watchlist(
+    user_id: str,
+    body: WatchlistUpdate,
+    session: DbSession,
+    current_user: CurrentUser,
+) -> WatchlistOut:
+    _check_access(current_user, user_id)
+    import json
+    symbols = [s.strip().upper() for s in body.symbols if s.strip()]
+
+    settings = account_repo.get_user_settings(session, user_id)
+    layout = {}
+    if settings and settings.dashboard_layout:
+        try:
+            layout = json.loads(settings.dashboard_layout)
+        except (json.JSONDecodeError, AttributeError):
+            layout = {}
+    layout["watchlist"] = symbols
+
+    account_repo.upsert_user_settings(
+        session,
+        user_id=user_id,
+        theme=settings.theme if settings else "system",
+        dashboard_layout=json.dumps(layout),
+        timezone=settings.timezone if settings else "America/New_York",
+        notifications_enabled=settings.notifications_enabled if settings else True,
+    )
+    return WatchlistOut(symbols=symbols)
 
 
 # ---------------------------------------------------------------------------
