@@ -17,7 +17,9 @@ from src.api.deps import get_db
 from src.api.main import app
 from src.auth import hash_password
 from src.db.models import Base, User, UserRole
-from src.db.repos import portfolio_repo, trade_repo, gate_log_repo, regime_repo, user_repo
+from src.db.repos import account_repo, portfolio_repo, trade_repo, gate_log_repo, regime_repo, user_repo, worker_repo
+from src.market_data.quote_cache import RedisQuoteCache
+from src.market_data.streamer import QuoteUpdateProcessor
 
 
 # ---------------------------------------------------------------------------
@@ -46,6 +48,26 @@ def TestSession(test_engine):
 
 @pytest.fixture(scope="module")
 def client(test_engine, TestSession):
+    class _FakeRedis:
+        def __init__(self):
+            self.kv = {}
+            self.sets = {}
+
+        def set(self, key, value):
+            self.kv[key] = value
+
+        def get(self, key):
+            return self.kv.get(key)
+
+        def sadd(self, key, *values):
+            self.sets.setdefault(key, set()).update(values)
+
+        def smembers(self, key):
+            return self.sets.get(key, set())
+
+        def srem(self, key, value):
+            self.sets.setdefault(key, set()).discard(value)
+
     def override_get_db():
         session = TestSession()
         try:
@@ -58,11 +80,18 @@ def client(test_engine, TestSession):
             session.close()
 
     app.dependency_overrides[get_db] = override_get_db
+    quote_cache = RedisQuoteCache(_FakeRedis())
+    processor = QuoteUpdateProcessor(quote_cache)
+    processor.process("AAPL", bid=174.5, ask=175.5)
+    processor.process("MSFT", bid=399.0, ask=401.0)
+    app.state.quote_cache = quote_cache
 
     with TestClient(app) as c:
         yield c
 
     app.dependency_overrides.clear()
+    if hasattr(app.state, "quote_cache"):
+        delattr(app.state, "quote_cache")
 
 
 @pytest.fixture(scope="module")
@@ -86,10 +115,34 @@ def seeded(TestSession):
             paper=False,
         )
         portfolio_repo.snapshot_portfolio(session, user_id="api_trader", equity=100_000.0, cash=50_000.0, daily_pnl=500.0)
-        portfolio_repo.upsert_position(session, user_id="api_trader", symbol="AAPL", qty=10.0, avg_entry_price=175.0)
+        portfolio_repo.upsert_position(session, user_id="api_trader", symbol="AAPL", qty=10.0, avg_entry_price=175.0, last_buy_price=175.0)
         trade_repo.record_trade(session, user_id="api_trader", symbol="MSFT", qty=5.0, pnl=200.0, exit_reason="target")
         gate_log_repo.record_gate(session, user_id="api_trader", gate="regime_filter", passed=True, reason="bullish")
         regime_repo.record_regime(session, user_id="api_trader", label="bullish", spy_score=0.72, vix=14.2)
+        broker_account = account_repo.create_broker_account(
+            session,
+            user_id="api_trader",
+            provider="alpaca",
+            provider_account_id="acct-api-trader",
+            paper=True,
+            credentials_ref="user:api_trader:alpaca",
+        )
+        session.flush()
+        account_repo.upsert_account_settings(
+            session,
+            broker_account_id=broker_account.id,
+            trading_enabled=True,
+            bot_state="running",
+            strategy_slug="trend_following",
+            risk_profile="balanced",
+            max_positions=5,
+        )
+        worker_repo.upsert_worker_status(
+            session,
+            worker_name="alpaca_loop",
+            status="running",
+            current_user_id="api_trader",
+        )
         session.commit()
     return {"trader_id": "api_trader", "admin_id": "api_admin"}
 
@@ -206,6 +259,7 @@ def test_get_positions(client, seeded, trader_token):
     positions = resp.json()
     assert len(positions) >= 1
     assert positions[0]["symbol"] == "AAPL"
+    assert positions[0]["last_buy_price"] == pytest.approx(175.0)
 
 
 # ---------------------------------------------------------------------------
@@ -259,6 +313,63 @@ def test_get_regime(client, seeded, trader_token):
     data = resp.json()
     assert data["label"] == "bullish"
     assert data["spy_score"] == pytest.approx(0.72)
+
+
+def test_get_account_settings(client, seeded, trader_token):
+    resp = client.get(
+        "/api/users/api_trader/account-settings",
+        headers={"Authorization": f"Bearer {trader_token}"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["paper"] is True
+    assert data["bot_state"] == "running"
+    assert data["strategy_slug"] == "trend_following"
+    assert data["risk_profile"] == "balanced"
+    assert data["max_positions"] == 5
+    assert data["worker_status"] == "running"
+
+
+def test_update_bot_control_pauses_new_entries(client, seeded, trader_token):
+    resp = client.patch(
+        "/api/users/api_trader/bot-control",
+        headers={"Authorization": f"Bearer {trader_token}"},
+        json={"bot_state": "paused"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["bot_state"] == "paused"
+    assert data["trading_enabled"] is False
+
+
+def test_update_bot_control_forbidden_other_user(client, seeded, trader_token):
+    resp = client.patch(
+        "/api/users/api_admin/bot-control",
+        headers={"Authorization": f"Bearer {trader_token}"},
+        json={"bot_state": "stopped"},
+    )
+    assert resp.status_code == 403
+
+
+def test_get_quotes_explicit_symbols(client, seeded, trader_token):
+    resp = client.get(
+        "/api/users/api_trader/quotes?symbols=AAPL&symbols=MSFT",
+        headers={"Authorization": f"Bearer {trader_token}"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["feed_status"] == "OK"
+    assert {q["symbol"] for q in data["quotes"]} == {"AAPL", "MSFT"}
+
+
+def test_get_quotes_defaults_to_positions(client, seeded, trader_token):
+    resp = client.get(
+        "/api/users/api_trader/quotes",
+        headers={"Authorization": f"Bearer {trader_token}"},
+    )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert [q["symbol"] for q in data["quotes"]] == ["AAPL"]
 
 
 # ---------------------------------------------------------------------------
@@ -418,6 +529,37 @@ def test_onboard_updates_user_profile(client):
     assert me2.json()["paper"] is False
 
 
+def test_onboard_creates_broker_account_settings(client):
+    reg = client.post("/auth/register", json={
+        "email": "onboard3@onboard-test.example.com",
+        "password": "validpass123",
+    })
+    token = reg.json()["access_token"]
+    me = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+    user_id = me.json()["id"]
+
+    resp = client.put(
+        f"/api/users/{user_id}/onboard",
+        json={
+            "alpaca_key": "PKTEST999",
+            "alpaca_secret": "secret999",
+            "paper": True,
+            "risk_profile": "balanced",
+        },
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200
+
+    settings_resp = client.get(
+        f"/api/users/{user_id}/account-settings",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert settings_resp.status_code == 200
+    settings = settings_resp.json()
+    assert settings["strategy_slug"] == "trend_following"
+    assert settings["risk_profile"] == "balanced"
+
+
 def test_onboard_forbidden_other_user(client, seeded, trader_token):
     resp = client.put(
         "/api/users/api_admin/onboard",
@@ -447,7 +589,7 @@ def test_onboard_no_auth(client, seeded):
 
 def test_onboard_missing_fields(client):
     reg = client.post("/auth/register", json={
-        "email": "onboard3@onboard-test.example.com",
+        "email": "onboard-missing@onboard-test.example.com",
         "password": "validpass123",
     })
     token = reg.json()["access_token"]

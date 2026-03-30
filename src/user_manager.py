@@ -1,13 +1,8 @@
 """Multi-user account management for the trading engine.
 
-Loads user definitions from ``config/users.yaml``, resolves Alpaca
-credentials from environment variables, and produces a merged config
-per user by deep-merging user-specific overrides onto the base
-``config/default.yaml``.
-
-When no ``users.yaml`` exists the system falls back to single-user mode
-using the standard ``APCA_API_KEY_ID`` / ``APCA_API_SECRET_KEY`` env
-vars — fully backward-compatible with the pre-multi-user behaviour.
+Runtime loading defaults to DB-backed users + broker accounts. YAML and
+single-user environment-variable loading remain as explicit compatibility
+fallbacks for local development and migration.
 """
 
 from __future__ import annotations
@@ -73,6 +68,20 @@ def _resolve_env(var_name: str, user_id: str, field_label: str) -> str:
     return value
 
 
+def _resolve_secret_value(raw_or_env: str | None, user_id: str, field_label: str) -> str:
+    """Resolve a raw credential or an env-var reference.
+
+    If *raw_or_env* matches an existing environment variable, that value is used.
+    Otherwise the raw value itself is returned. Empty values raise.
+    """
+    value = (raw_or_env or "").strip()
+    if not value:
+        raise EnvironmentError(
+            f"Credential for user '{user_id}' {field_label} is not set or is empty."
+        )
+    return os.environ.get(value, value)
+
+
 # ---------------------------------------------------------------------------
 # UserManager
 # ---------------------------------------------------------------------------
@@ -94,12 +103,14 @@ class UserManager:
         self,
         base_config: dict[str, Any],
         users_path: str | Path | None = None,
+        runtime_source: str = "db",
     ) -> None:
         self._base_config = base_config
         self._users_path = self._resolve_users_path(users_path)
         self._users: dict[str, UserContext] = {}
         self._brokers: dict[str, Any] = {}
         self._multi_user: bool = False
+        self._runtime_source = (runtime_source or "auto").strip().lower()
         self._load()
 
     # ------------------------------------------------------------------
@@ -108,7 +119,7 @@ class UserManager:
 
     @property
     def multi_user(self) -> bool:
-        """True when running in multi-user mode (users.yaml found)."""
+        """True when running in multi-user mode."""
         return self._multi_user
 
     def list_users(self) -> list[UserContext]:
@@ -161,6 +172,14 @@ class UserManager:
         return Path(__file__).resolve().parent.parent / "config" / "users.yaml"
 
     def _load(self) -> None:
+        if self._runtime_source in ("auto", "db") and self._load_from_db():
+            return
+        if self._runtime_source == "db":
+            logger.warning(
+                "DB runtime requested but no active broker accounts found; "
+                "falling back to compatibility loaders."
+            )
+
         if not self._users_path.exists():
             logger.info(
                 "No users.yaml found at %s — running in single-user mode.",
@@ -199,6 +218,46 @@ class UserManager:
             ),
         )
 
+    def _load_from_db(self) -> bool:
+        """Load active runtime users from DB. Returns True if any were loaded."""
+        from src.db import get_session
+        from src.db.repos import account_repo, user_repo
+
+        try:
+            with get_session() as session:
+                accounts = account_repo.list_active_broker_accounts(session, provider="alpaca")
+                if not accounts:
+                    return False
+
+                for account in accounts:
+                    user = user_repo.get_by_id(session, account.user_id)
+                    if user is None:
+                        logger.warning(
+                            "Skipping broker account %s because user %s does not exist",
+                            account.id,
+                            account.user_id,
+                        )
+                        continue
+                    self._users[user.id] = self._build_user_context_from_db(user, account)
+        except EnvironmentError:
+            raise
+        except Exception:
+            logger.exception("Failed to load runtime users from DB")
+            return False
+
+        self._multi_user = len(self._users) > 1
+        if self._users:
+            logger.info(
+                "Loaded %d active user(s) from DB: %s",
+                len(self._users),
+                ", ".join(
+                    f"{u.user_id} ({'paper' if u.paper else 'LIVE'})"
+                    for u in self._users.values()
+                ),
+            )
+            return True
+        return False
+
     def _read_users_yaml(self) -> dict:
         with open(self._users_path) as f:
             data = yaml.safe_load(f)
@@ -222,6 +281,22 @@ class UserManager:
             api_key=api_key,
             api_secret=api_secret,
             paper=paper,
+            config=merged_config,
+        )
+
+    def _build_user_context_from_db(self, user: Any, account: Any) -> UserContext:
+        merged_config = deep_merge(
+            self._base_config,
+            {"broker": {"paper": bool(account.paper)}},
+        )
+        if getattr(user, "risk_profile", None):
+            merged_config.setdefault("account_runtime", {})["risk_profile"] = user.risk_profile
+
+        return UserContext(
+            user_id=user.id,
+            api_key=_resolve_secret_value(getattr(user, "alpaca_key_env", None), user.id, "API key"),
+            api_secret=_resolve_secret_value(getattr(user, "alpaca_secret_env", None), user.id, "API secret"),
+            paper=bool(account.paper),
             config=merged_config,
         )
 
@@ -254,3 +329,18 @@ class UserManager:
         logger.info(
             "Single-user mode: user_id='default', paper=%s", paper
         )
+
+
+def load_users(
+    *,
+    config_path: str | Path | None = None,
+    users_path: str | Path | None = None,
+    runtime_source: str = "db",
+) -> list[UserContext]:
+    """Convenience helper for scripts that need resolved runtime users."""
+    base_config = load_config(config_path)
+    return UserManager(
+        base_config,
+        users_path=users_path,
+        runtime_source=runtime_source,
+    ).list_users()

@@ -18,9 +18,10 @@ COPY config/ config/
 COPY alembic/ alembic/
 COPY alembic.ini .
 
-# Copy entrypoint
+# Copy entrypoints
 COPY docker/entrypoint-api.sh /entrypoint.sh
-RUN chmod +x /entrypoint.sh
+COPY docker/entrypoint-worker.sh /worker-entrypoint.sh
+RUN chmod +x /entrypoint.sh /worker-entrypoint.sh
 
 EXPOSE 8000
 

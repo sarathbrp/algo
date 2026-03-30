@@ -1,3 +1,0 @@
-# Dashboard UI (optional): pip install -r requirements-dashboard.txt
--r requirements.txt
-streamlit>=1.28.0

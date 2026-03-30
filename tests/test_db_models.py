@@ -16,7 +16,9 @@ from sqlalchemy.orm import sessionmaker
 os.environ.setdefault("TIDB_DSN", "")
 
 from src.db.models import (
+    AccountSettings,
     Base,
+    BrokerAccount,
     GateLog,
     PortfolioSnapshot,
     Position,
@@ -25,7 +27,9 @@ from src.db.models import (
     Trade,
     TradeSide,
     User,
+    UserSettings,
     UserRole,
+    WorkerStatus,
 )
 
 
@@ -69,7 +73,18 @@ def user(session) -> User:
 def test_all_tables_created(engine):
     insp = inspect(engine)
     tables = set(insp.get_table_names())
-    expected = {"users", "portfolio_snapshots", "positions", "trades", "regime_log", "gate_log"}
+    expected = {
+        "users",
+        "broker_accounts",
+        "user_settings",
+        "account_settings",
+        "portfolio_snapshots",
+        "positions",
+        "trades",
+        "regime_log",
+        "gate_log",
+        "worker_status",
+    }
     assert expected <= tables
 
 
@@ -77,6 +92,42 @@ def test_users_columns(engine):
     insp = inspect(engine)
     cols = {c["name"] for c in insp.get_columns("users")}
     assert {"id", "email", "hashed_password", "role", "paper", "created_at"} <= cols
+
+
+def test_broker_accounts_columns(engine):
+    insp = inspect(engine)
+    cols = {c["name"] for c in insp.get_columns("broker_accounts")}
+    assert {
+        "id", "user_id", "provider", "provider_account_id", "paper",
+        "credentials_ref", "is_active", "created_at", "updated_at",
+    } <= cols
+
+
+def test_user_settings_columns(engine):
+    insp = inspect(engine)
+    cols = {c["name"] for c in insp.get_columns("user_settings")}
+    assert {
+        "id", "user_id", "theme", "dashboard_layout", "timezone",
+        "notifications_enabled", "created_at", "updated_at",
+    } <= cols
+
+
+def test_account_settings_columns(engine):
+    insp = inspect(engine)
+    cols = {c["name"] for c in insp.get_columns("account_settings")}
+    assert {
+        "id", "broker_account_id", "trading_enabled", "bot_state", "strategy_slug",
+        "risk_profile", "max_positions", "created_at", "updated_at",
+    } <= cols
+
+
+def test_worker_status_columns(engine):
+    insp = inspect(engine)
+    cols = {c["name"] for c in insp.get_columns("worker_status")}
+    assert {
+        "id", "worker_name", "status", "current_user_id", "last_error",
+        "last_heartbeat", "last_reconciled_at", "updated_at",
+    } <= cols
 
 
 def test_trades_vector_column(engine):
@@ -100,6 +151,12 @@ def test_indexes_created(engine):
     gate_indexes = {i["name"] for i in insp.get_indexes("gate_log")}
     assert "idx_gate_user_time" in gate_indexes
     assert "idx_gate_user_gate" in gate_indexes
+
+    broker_indexes = {i["name"] for i in insp.get_indexes("broker_accounts")}
+    assert "idx_broker_account_active" in broker_indexes
+
+    worker_indexes = {i["name"] for i in insp.get_indexes("worker_status")}
+    assert "idx_worker_status_updated" in worker_indexes
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +188,65 @@ def test_user_email_unique_constraint(session):
     session.add(User(id="u4", email="same@test.com"))
     with pytest.raises(Exception):
         session.commit()
+
+
+def test_user_has_single_broker_account(session):
+    session.add(User(id="u5", email="u5@test.com"))
+    session.commit()
+    session.add(BrokerAccount(user_id="u5", provider_account_id="acct-1"))
+    session.commit()
+    session.add(BrokerAccount(user_id="u5", provider_account_id="acct-2"))
+    with pytest.raises(Exception):
+        session.commit()
+
+
+def test_create_user_settings(session, user):
+    settings = UserSettings(user_id=user.id, theme="amber", timezone="UTC")
+    session.add(settings)
+    session.commit()
+
+    fetched = session.get(UserSettings, settings.id)
+    assert fetched.theme == "amber"
+    assert fetched.timezone == "UTC"
+
+
+def test_create_broker_account_and_settings(session, user):
+    account = BrokerAccount(
+        user_id=user.id,
+        provider="alpaca",
+        provider_account_id="acct-123",
+        paper=True,
+        credentials_ref="secret://alpaca/trader1",
+    )
+    session.add(account)
+    session.commit()
+
+    acct_settings = AccountSettings(
+        broker_account_id=account.id,
+        trading_enabled=True,
+        bot_state="running",
+        strategy_slug="trend_following",
+        risk_profile="balanced",
+        max_positions=5,
+    )
+    session.add(acct_settings)
+    session.commit()
+
+    fetched_account = session.get(BrokerAccount, account.id)
+    fetched_settings = session.get(AccountSettings, acct_settings.id)
+    assert fetched_account.provider_account_id == "acct-123"
+    assert fetched_settings.bot_state == "running"
+    assert fetched_settings.max_positions == 5
+
+
+def test_create_worker_status(session):
+    status = WorkerStatus(worker_name="alpaca_loop", status="running")
+    session.add(status)
+    session.commit()
+
+    fetched = session.get(WorkerStatus, status.id)
+    assert fetched.worker_name == "alpaca_loop"
+    assert fetched.status == "running"
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +291,7 @@ def test_create_position(session, user):
         side=TradeSide.long,
         qty=10.0,
         avg_entry_price=175.50,
+        last_buy_price=175.50,
     )
     session.add(pos)
     session.commit()
@@ -183,6 +300,7 @@ def test_create_position(session, user):
     assert fetched.symbol == "AAPL"
     assert fetched.side == TradeSide.long
     assert float(fetched.qty) == pytest.approx(10.0)
+    assert float(fetched.last_buy_price) == pytest.approx(175.5)
 
 
 def test_position_multi_user_isolation(session):
@@ -201,6 +319,16 @@ def test_position_multi_user_isolation(session):
     ).all()
     assert len(u1_positions) == 1
     assert u1_positions[0].symbol == "TSLA"
+
+
+def test_position_unique_per_user_symbol(session):
+    session.add(User(id="mu3", email="mu3@test.com"))
+    session.commit()
+    session.add(Position(user_id="mu3", symbol="TSLA", side=TradeSide.long, qty=5))
+    session.commit()
+    session.add(Position(user_id="mu3", symbol="TSLA", side=TradeSide.long, qty=8))
+    with pytest.raises(Exception):
+        session.commit()
 
 
 # ---------------------------------------------------------------------------

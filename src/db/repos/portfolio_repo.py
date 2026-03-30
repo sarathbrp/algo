@@ -22,6 +22,7 @@ def snapshot_portfolio(
     buying_power: float | None = None,
     daily_pnl: float | None = None,
     daily_pnl_pct: float | None = None,
+    mode: str | None = None,
 ) -> PortfolioSnapshot:
     """Insert a new portfolio snapshot and return it."""
     snap = PortfolioSnapshot(
@@ -31,6 +32,7 @@ def snapshot_portfolio(
         buying_power=buying_power,
         daily_pnl=daily_pnl,
         daily_pnl_pct=daily_pnl_pct,
+        mode=mode,
     )
     session.add(snap)
     return snap
@@ -68,6 +70,26 @@ def get_equity_history(
     )[::-1]
 
 
+def get_snapshots_for_date(
+    session: Session, user_id: str, date, *, mode: str | None = None
+) -> list[PortfolioSnapshot]:
+    """Return all snapshots for a specific calendar date, ordered oldest-first."""
+    from datetime import timedelta, timezone as tz
+    day_start = datetime(date.year, date.month, date.day, tzinfo=tz.utc)
+    day_end = day_start + timedelta(days=1)
+    q = (
+        select(PortfolioSnapshot)
+        .where(
+            PortfolioSnapshot.user_id == user_id,
+            PortfolioSnapshot.captured_at >= day_start,
+            PortfolioSnapshot.captured_at < day_end,
+        )
+    )
+    if mode is not None:
+        q = q.where(PortfolioSnapshot.mode == mode)
+    return list(session.scalars(q.order_by(PortfolioSnapshot.captured_at.asc())))
+
+
 # ---------------------------------------------------------------------------
 # Positions
 # ---------------------------------------------------------------------------
@@ -80,6 +102,7 @@ def upsert_position(
     side: str = "long",
     qty: float,
     avg_entry_price: float | None = None,
+    last_buy_price: float | None = None,
     current_price: float | None = None,
     unrealized_pnl: float | None = None,
     stop_pct: float | None = None,
@@ -100,6 +123,7 @@ def upsert_position(
             side=trade_side,
             qty=qty,
             avg_entry_price=avg_entry_price,
+            last_buy_price=last_buy_price,
             current_price=current_price,
             unrealized_pnl=unrealized_pnl,
             stop_pct=stop_pct,
@@ -114,6 +138,8 @@ def upsert_position(
     existing.qty = qty
     if avg_entry_price is not None:
         existing.avg_entry_price = avg_entry_price
+    if last_buy_price is not None:
+        existing.last_buy_price = last_buy_price
     if current_price is not None:
         existing.current_price = current_price
     if unrealized_pnl is not None:

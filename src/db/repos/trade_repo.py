@@ -25,6 +25,7 @@ def record_trade(
     entered_at: datetime | None = None,
     exited_at: datetime | None = None,
     setup_vector: list[float] | None = None,
+    mode: str | None = None,
 ) -> Trade:
     """Insert a completed trade record and return it."""
     trade = Trade(
@@ -37,6 +38,7 @@ def record_trade(
         pnl=pnl,
         pnl_pct=pnl_pct,
         exit_reason=exit_reason,
+        mode=mode,
         entered_at=entered_at,
         exited_at=exited_at,
         setup_vector=setup_vector,
@@ -45,16 +47,32 @@ def record_trade(
     return trade
 
 
-def get_trades(session: Session, user_id: str, limit: int = 50) -> list[Trade]:
+def get_trades(session: Session, user_id: str, limit: int = 50, *, mode: str | None = None) -> list[Trade]:
     """Return the most recent *limit* trades for *user_id*, newest first."""
-    return list(
-        session.scalars(
-            select(Trade)
-            .where(Trade.user_id == user_id)
-            .order_by(Trade.exited_at.desc(), Trade.id.desc())
-            .limit(limit)
+    q = select(Trade).where(Trade.user_id == user_id)
+    if mode is not None:
+        q = q.where(Trade.mode == mode)
+    return list(session.scalars(q.order_by(Trade.exited_at.desc(), Trade.id.desc()).limit(limit)))
+
+
+def get_trades_for_date(
+    session: Session, user_id: str, date, *, mode: str | None = None
+) -> list[Trade]:
+    """Return all trades closed on a specific date."""
+    from datetime import timedelta, timezone as tz
+    day_start = datetime(date.year, date.month, date.day, tzinfo=tz.utc)
+    day_end = day_start + timedelta(days=1)
+    q = (
+        select(Trade)
+        .where(
+            Trade.user_id == user_id,
+            Trade.exited_at >= day_start,
+            Trade.exited_at < day_end,
         )
     )
+    if mode is not None:
+        q = q.where(Trade.mode == mode)
+    return list(session.scalars(q.order_by(Trade.exited_at.asc())))
 
 
 def get_trade_by_id(session: Session, trade_id: int) -> Trade | None:

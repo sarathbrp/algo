@@ -1,16 +1,14 @@
-"""Track open positions (entry price, time) for exit logic. Persisted to JSON.
+"""Track open positions (entry price, time) for exit logic.
 
-Each user's positions are stored in a separate file:
-``data/positions_{user_id}.json``.  When no ``user_id`` is supplied the
-module falls back to ``"default"``.
-
-On first run, if a legacy ``data/positions_tracked.json`` exists it is
-automatically migrated to ``data/positions_default.json``.
+The production path persists tracked positions in the database. JSON files
+under ``data/`` remain as a compatibility backend for local development and
+older tooling that passes an explicit file path.
 """
 from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,6 +23,18 @@ logger = logging.getLogger(__name__)
 def _data_dir() -> Path:
     """Return the default ``data/`` directory (project root / data)."""
     return Path(__file__).resolve().parent.parent / "data"
+
+
+def _use_db_backend(*, base_path: Path | None = None) -> bool:
+    """Return True when tracked positions should be persisted in DB."""
+    if base_path is not None:
+        return False
+    backend = os.environ.get("POSITION_TRACKER_BACKEND", "auto").strip().lower()
+    if backend == "file":
+        return False
+    if backend == "db":
+        return True
+    return bool(os.environ.get("TIDB_DSN", "").strip())
 
 
 def _user_path(user_id: str = "default", data_dir: Path | None = None) -> Path:
@@ -54,6 +64,51 @@ def _migrate_legacy(data_dir: Path | None = None) -> None:
         )
 
 
+def _parse_entry_time(value: Any) -> datetime | None:
+    if value is None or str(value).strip() == "":
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except Exception:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _db_position_to_row(pos: Any) -> dict[str, Any]:
+    side = getattr(pos.side, "value", pos.side)
+    qty = float(pos.qty)
+    if qty.is_integer():
+        qty = int(qty)
+    return {
+        "qty": qty,
+        "entry_price": float(pos.avg_entry_price) if pos.avg_entry_price is not None else 0.0,
+        "entry_time": pos.entered_at.isoformat() if pos.entered_at else "",
+        "stop_pct": float(pos.stop_pct) if pos.stop_pct is not None else None,
+        "partial_taken": bool(pos.partial_taken),
+        "trail_high": float(pos.trail_high) if pos.trail_high is not None else None,
+        "side": str(side or "long"),
+        "last_buy_price": (
+            float(pos.last_buy_price)
+            if getattr(pos, "last_buy_price", None) is not None
+            else float(pos.avg_entry_price) if pos.avg_entry_price is not None else 0.0
+        ),
+    }
+
+
+def _tracker_path_to_user_id(tracker_path: Path | str | None) -> str | None:
+    if tracker_path is None:
+        return "default"
+    path = Path(tracker_path)
+    if path.name == _LEGACY_FILENAME:
+        return "default"
+    stem = path.stem
+    if stem.startswith("positions_"):
+        return stem[len("positions_"):]
+    return None
+
+
 # ---------------------------------------------------------------------------
 # CRUD
 # ---------------------------------------------------------------------------
@@ -69,6 +124,14 @@ def load(
     ``base_path`` is accepted for backward compatibility but ``user_id``
     is the preferred interface.
     """
+    if _use_db_backend(base_path=base_path):
+        from src.db import get_session
+        from src.db.repos import portfolio_repo
+
+        with get_session() as session:
+            positions = portfolio_repo.get_positions(session, user_id)
+            return {pos.symbol.upper(): _db_position_to_row(pos) for pos in positions}
+
     if base_path is not None:
         path = base_path
     else:
@@ -91,6 +154,30 @@ def save(
     base_path: Path | None = None,
 ) -> None:
     """Persist *data* for *user_id*."""
+    if _use_db_backend(base_path=base_path):
+        from src.db import get_session
+        from src.db.repos import portfolio_repo
+
+        with get_session() as session:
+            portfolio_repo.clear_positions(session, user_id)
+            for symbol, row in data.items():
+                if not isinstance(row, dict):
+                    continue
+                portfolio_repo.upsert_position(
+                    session,
+                    user_id=user_id,
+                    symbol=str(symbol).upper(),
+                    side=str(row.get("side") or "long"),
+                    qty=float(row.get("qty") or 0),
+                    avg_entry_price=float(row.get("entry_price") or 0),
+                    last_buy_price=float(row.get("last_buy_price") or row.get("entry_price") or 0),
+                    stop_pct=float(row["stop_pct"]) if row.get("stop_pct") is not None else None,
+                    partial_taken=bool(row.get("partial_taken", False)),
+                    trail_high=float(row["trail_high"]) if row.get("trail_high") is not None else None,
+                    entered_at=_parse_entry_time(row.get("entry_time")),
+                )
+        return
+
     path = base_path if base_path is not None else _user_path(user_id, data_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as f:
@@ -111,6 +198,26 @@ def add(
     base_path: Path | None = None,
 ) -> None:
     """Add a new tracked position for *symbol*."""
+    if _use_db_backend(base_path=base_path):
+        from src.db import get_session
+        from src.db.repos import portfolio_repo
+
+        with get_session() as session:
+            portfolio_repo.upsert_position(
+                session,
+                user_id=user_id,
+                symbol=symbol.upper(),
+                side=side,
+                qty=float(qty),
+                avg_entry_price=float(entry_price),
+                last_buy_price=float(entry_price),
+                stop_pct=float(stop_pct),
+                partial_taken=partial_taken,
+                trail_high=float(trail_high) if trail_high is not None else None,
+                entered_at=datetime.now(timezone.utc),
+            )
+        return
+
     data = load(user_id, data_dir=data_dir, base_path=base_path)
     data[symbol.upper()] = {
         "qty": qty,
@@ -142,6 +249,48 @@ def merge_add_shares(
     """
     if add_qty <= 0:
         return
+    if _use_db_backend(base_path=base_path):
+        from src.db import get_session
+        from src.db.repos import portfolio_repo
+
+        with get_session() as session:
+            existing = portfolio_repo.get_positions(session, user_id)
+            current = next((p for p in existing if p.symbol.upper() == symbol.upper()), None)
+            if current is None:
+                portfolio_repo.upsert_position(
+                    session,
+                    user_id=user_id,
+                    symbol=symbol.upper(),
+                    side="long",
+                    qty=float(add_qty),
+                    avg_entry_price=float(fill_price),
+                    last_buy_price=float(fill_price),
+                    stop_pct=float(stop_pct if stop_pct is not None else 2.0),
+                    entered_at=datetime.now(timezone.utc),
+                )
+            else:
+                oq = float(current.qty or 0)
+                oe = float(current.avg_entry_price or 0)
+                new_q = oq + add_qty
+                new_e = ((oe * oq + fill_price * add_qty) / new_q) if oq > 0 and oe > 0 else fill_price
+                portfolio_repo.upsert_position(
+                    session,
+                    user_id=user_id,
+                    symbol=symbol.upper(),
+                    side=getattr(current.side, "value", current.side),
+                    qty=float(new_q),
+                    avg_entry_price=float(new_e),
+                    last_buy_price=float(fill_price),
+                    stop_pct=float(stop_pct) if stop_pct is not None else (float(current.stop_pct) if current.stop_pct is not None else None),
+                    partial_taken=bool(current.partial_taken),
+                    trail_high=float(current.trail_high) if current.trail_high is not None else None,
+                    entered_at=current.entered_at,
+                )
+                if extras:
+                    # Extras remain unsupported in the DB backend until specific fields are modeled.
+                    logger.debug("Ignoring unsupported tracker extras for DB backend: %s", sorted(extras))
+        return
+
     data = load(user_id, data_dir=data_dir, base_path=base_path)
     key = symbol.upper()
     if key not in data:
@@ -186,6 +335,32 @@ def update(
     base_path: Path | None = None,
 ) -> None:
     """Update one or more fields for an existing position."""
+    if _use_db_backend(base_path=base_path):
+        from src.db import get_session
+        from src.db.repos import portfolio_repo
+
+        with get_session() as session:
+            existing = next(
+                (p for p in portfolio_repo.get_positions(session, user_id) if p.symbol.upper() == symbol.upper()),
+                None,
+            )
+            if existing is None:
+                return
+            portfolio_repo.upsert_position(
+                session,
+                user_id=user_id,
+                symbol=symbol.upper(),
+                side=getattr(existing.side, "value", existing.side),
+                qty=float(qty) if qty is not None else float(existing.qty),
+                avg_entry_price=float(existing.avg_entry_price) if existing.avg_entry_price is not None else None,
+                last_buy_price=float(existing.last_buy_price) if getattr(existing, "last_buy_price", None) is not None else None,
+                stop_pct=float(existing.stop_pct) if existing.stop_pct is not None else None,
+                partial_taken=partial_taken if partial_taken is not None else bool(existing.partial_taken),
+                trail_high=float(trail_high) if trail_high is not None else (float(existing.trail_high) if existing.trail_high is not None else None),
+                entered_at=existing.entered_at,
+            )
+        return
+
     data = load(user_id, data_dir=data_dir, base_path=base_path)
     key = symbol.upper()
     if key not in data:
@@ -207,6 +382,14 @@ def remove(
     base_path: Path | None = None,
 ) -> None:
     """Remove *symbol* from tracked positions."""
+    if _use_db_backend(base_path=base_path):
+        from src.db import get_session
+        from src.db.repos import portfolio_repo
+
+        with get_session() as session:
+            portfolio_repo.remove_position(session, user_id, symbol)
+        return
+
     data = load(user_id, data_dir=data_dir, base_path=base_path)
     data.pop(symbol.upper(), None)
     save(data, user_id, data_dir=data_dir, base_path=base_path)
@@ -219,6 +402,14 @@ def clear_all(
     base_path: Path | None = None,
 ) -> None:
     """Clear all tracked positions (e.g. after resetting paper account)."""
+    if _use_db_backend(base_path=base_path):
+        from src.db import get_session
+        from src.db.repos import portfolio_repo
+
+        with get_session() as session:
+            portfolio_repo.clear_positions(session, user_id)
+        return
+
     save({}, user_id, data_dir=data_dir, base_path=base_path)
 
 
@@ -283,6 +474,12 @@ def minutes_since_iso(ts: str | None, now_dt: datetime) -> float | None:
 
 def get_tracked_entry_info(tracker_path: Path | str | None, symbol: str) -> dict[str, Any]:
     """Return one symbol's row from the tracker file, or {} if missing / invalid."""
+    if _use_db_backend() and tracker_path is not None:
+        user_id = _tracker_path_to_user_id(tracker_path)
+        if user_id:
+            data = load(user_id=user_id)
+            row = data.get(str(symbol).upper()) or data.get(symbol) or {}
+            return row if isinstance(row, dict) else {}
     path = Path(tracker_path) if tracker_path is not None else _user_path("default")
     data = load(base_path=path)
     key = str(symbol).upper()

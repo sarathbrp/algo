@@ -6,9 +6,12 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
 from src.config_loader import load_config
-from src.user_manager import UserContext, UserManager
+from src.db.models import Base, BrokerAccount, User
+from src.user_manager import UserContext, UserManager, load_users
 
 
 # ---------------------------------------------------------------------------
@@ -29,6 +32,23 @@ def users_yaml(tmp_path):
         p.write_text(textwrap.dedent(content))
         return p
     return _write
+
+
+@pytest.fixture()
+def db_runtime(monkeypatch):
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, future=True)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+
+    import src.db.connection as dbc
+
+    monkeypatch.setattr(dbc, "engine", engine)
+    monkeypatch.setattr(dbc, "_SessionLocal", Session)
+
+    yield Session
+
+    Base.metadata.drop_all(engine)
+    engine.dispose()
 
 
 # ---------------------------------------------------------------------------
@@ -240,6 +260,125 @@ class TestSingleUserFallback:
         mgr = UserManager(base_config, users_path=tmp_path / "nope.yaml")
         with pytest.raises(KeyError, match="Unknown user_id 'bob'"):
             mgr.get_user("bob")
+
+
+class TestDbRuntimeLoading:
+
+    def test_loads_active_users_from_db(self, base_config, db_runtime):
+        with db_runtime() as session:
+            session.add_all([
+                User(
+                    id="alice",
+                    email="alice@test.com",
+                    alpaca_key_env="raw-alice-key",
+                    alpaca_secret_env="raw-alice-secret",
+                ),
+                User(
+                    id="bob",
+                    email="bob@test.com",
+                    alpaca_key_env="raw-bob-key",
+                    alpaca_secret_env="raw-bob-secret",
+                ),
+            ])
+            session.commit()
+            session.add_all([
+                BrokerAccount(user_id="alice", provider="alpaca", provider_account_id="acct-a", paper=True, is_active=True),
+                BrokerAccount(user_id="bob", provider="alpaca", provider_account_id="acct-b", paper=False, is_active=True),
+            ])
+            session.commit()
+
+        mgr = UserManager(base_config, runtime_source="db")
+        users = mgr.list_users()
+        assert [u.user_id for u in users] == ["alice", "bob"]
+        assert mgr.multi_user is True
+        assert mgr.get_user("alice").api_key == "raw-alice-key"
+        assert mgr.get_user("bob").paper is False
+
+    def test_default_runtime_prefers_db_accounts(self, base_config, db_runtime):
+        with db_runtime() as session:
+            session.add(
+                User(
+                    id="alice",
+                    email="alice@test.com",
+                    alpaca_key_env="raw-alice-key",
+                    alpaca_secret_env="raw-alice-secret",
+                )
+            )
+            session.commit()
+            session.add(
+                BrokerAccount(
+                    user_id="alice",
+                    provider="alpaca",
+                    provider_account_id="acct-a",
+                    paper=True,
+                    is_active=True,
+                )
+            )
+            session.commit()
+
+        mgr = UserManager(base_config)
+        assert [u.user_id for u in mgr.list_users()] == ["alice"]
+
+    def test_db_runtime_resolves_env_references(self, base_config, db_runtime, monkeypatch):
+        monkeypatch.setenv("ALICE_KEY_ENV", "resolved-key")
+        monkeypatch.setenv("ALICE_SECRET_ENV", "resolved-secret")
+        with db_runtime() as session:
+            session.add(
+                User(
+                    id="alice",
+                    email="alice@test.com",
+                    alpaca_key_env="ALICE_KEY_ENV",
+                    alpaca_secret_env="ALICE_SECRET_ENV",
+                )
+            )
+            session.commit()
+            session.add(BrokerAccount(user_id="alice", provider="alpaca", provider_account_id="acct-a", paper=True, is_active=True))
+            session.commit()
+
+        mgr = UserManager(base_config, runtime_source="db")
+        alice = mgr.get_user("alice")
+        assert alice.api_key == "resolved-key"
+        assert alice.api_secret == "resolved-secret"
+
+    def test_auto_runtime_falls_back_to_yaml_when_db_empty(self, base_config, users_yaml, db_runtime, monkeypatch):
+        monkeypatch.setenv("U1_KEY", "key1")
+        monkeypatch.setenv("U1_SECRET", "secret1")
+        path = users_yaml("""\
+            users:
+              - id: alice
+                alpaca_key_env: U1_KEY
+                alpaca_secret_env: U1_SECRET
+                paper: true
+        """)
+
+        mgr = UserManager(base_config, users_path=path, runtime_source="auto")
+        assert mgr.list_users()[0].user_id == "alice"
+
+    def test_db_runtime_requires_credentials(self, base_config, db_runtime):
+        with db_runtime() as session:
+            session.add(User(id="alice", email="alice@test.com"))
+            session.commit()
+            session.add(BrokerAccount(user_id="alice", provider="alpaca", provider_account_id="acct-a", paper=True, is_active=True))
+            session.commit()
+
+        with pytest.raises(EnvironmentError, match="API key"):
+            UserManager(base_config, runtime_source="db")
+
+
+def test_load_users_helper_uses_yaml_runtime(base_config, users_yaml, monkeypatch):
+    monkeypatch.setenv("U1_KEY", "key1")
+    monkeypatch.setenv("U1_SECRET", "secret1")
+    path = users_yaml("""\
+        users:
+          - id: alice
+            alpaca_key_env: U1_KEY
+            alpaca_secret_env: U1_SECRET
+            paper: true
+    """)
+
+    users = load_users(users_path=path, runtime_source="yaml")
+    assert len(users) == 1
+    assert users[0].user_id == "alice"
 
 
 # ---------------------------------------------------------------------------

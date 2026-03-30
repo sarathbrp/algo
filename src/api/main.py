@@ -37,6 +37,21 @@ app.include_router(auth.router)
 app.include_router(users.router)
 app.include_router(admin.router)
 
+# ---------------------------------------------------------------------------
+# Redis quote cache (optional — degrades gracefully if REDIS_URL is unset)
+# ---------------------------------------------------------------------------
+_redis_url = os.environ.get("REDIS_URL")
+if _redis_url:
+    try:
+        import redis
+        from src.market_data.quote_cache import RedisQuoteCache
+
+        _redis_client = redis.from_url(_redis_url, decode_responses=False)
+        app.state.quote_cache = RedisQuoteCache(_redis_client)
+    except Exception as exc:
+        import logging
+        logging.getLogger(__name__).warning("Redis quote cache unavailable: %s", exc)
+
 
 @app.get("/healthz", tags=["meta"])
 def healthz() -> dict:
