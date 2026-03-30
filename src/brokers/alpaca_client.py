@@ -5,8 +5,8 @@ Uses alpaca-py (TradingClient + StockHistoricalDataClient).
 
 Credentials can be supplied in two ways (checked in order):
   1. Explicit ``api_key`` / ``secret`` / ``paper`` arguments (multi-user mode).
-  2. Environment variables: APCA_API_KEY_ID, APCA_API_SECRET_KEY (paper) or
-     ALPACA_LIVE_API_KEY_ID, ALPACA_LIVE_API_SECRET_KEY (live).
+  2. Environment variables: ``APCA_API_KEY_ID`` / ``APCA_API_SECRET_KEY`` (paper only) or
+     ``ALPACA_LIVE_API_KEY_ID`` / ``ALPACA_LIVE_API_SECRET_KEY`` (live only — paper keys are not used as fallback).
 
 Retries on connection errors (RemoteDisconnected, ConnectionError) so the loop
 doesn't crash.
@@ -119,12 +119,19 @@ class AlpacaBroker:
                 resolved_key = _env("APCA_API_KEY_ID") or broker_cfg.get("api_key")
                 resolved_secret = _env("APCA_API_SECRET_KEY") or broker_cfg.get("secret_key")
             else:
-                resolved_key = _env("ALPACA_LIVE_API_KEY_ID") or _env("APCA_API_KEY_ID") or broker_cfg.get("api_key")
-                resolved_secret = _env("ALPACA_LIVE_API_SECRET_KEY") or _env("APCA_API_SECRET_KEY") or broker_cfg.get("secret_key")
+                # Live API rejects paper keys — do not fall back to APCA_* (avoids opaque 401/unauthorized).
+                resolved_key = _env("ALPACA_LIVE_API_KEY_ID") or broker_cfg.get("api_key")
+                resolved_secret = _env("ALPACA_LIVE_API_SECRET_KEY") or broker_cfg.get("secret_key")
         if not resolved_key or not resolved_secret:
+            if self.paper:
+                raise ValueError(
+                    "Alpaca paper credentials required. Set APCA_API_KEY_ID and APCA_API_SECRET_KEY "
+                    "(Alpaca dashboard → Paper Trading → API Keys)."
+                )
             raise ValueError(
-                "Alpaca credentials required. Set APCA_API_KEY_ID and APCA_API_SECRET_KEY (paper). "
-                "For live, set ALPACA_LIVE_API_KEY_ID and ALPACA_LIVE_API_SECRET_KEY (Alpaca uses separate keys for live)."
+                "Alpaca LIVE credentials required. Set ALPACA_LIVE_API_KEY_ID and "
+                "ALPACA_LIVE_API_SECRET_KEY (Alpaca dashboard → Live → API Keys). "
+                "Paper keys (APCA_*) are not accepted on the live trading API."
             )
 
         self._trading = TradingClient(resolved_key, resolved_secret, paper=self.paper)
@@ -137,7 +144,7 @@ class AlpacaBroker:
         self._option_data: Any = None
         self._options_feed: Any = None
         if ALPACA_OPTIONS_CHAIN and OptionHistoricalDataClient is not None and OptionsFeed is not None:
-            self._option_data = OptionHistoricalDataClient(api_key, secret)
+            self._option_data = OptionHistoricalDataClient(resolved_key, resolved_secret)
             opt_feed_name = (broker_cfg.get("options_feed") or "indicative").strip().lower()
             self._options_feed = getattr(OptionsFeed, opt_feed_name.upper(), OptionsFeed.INDICATIVE)
 

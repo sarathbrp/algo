@@ -52,6 +52,7 @@ from src.entry_router import (
 from src.user_manager import UserManager
 from src.db import get_session
 from src.db.repos import account_repo
+from src.loop_lock import LoopLockError, UserLoopLock, acquire_user_loop_locks
 from src.loop_helpers import (
     UserLoopContext,
     init_user_contexts,

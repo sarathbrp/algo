@@ -37,11 +37,18 @@ def _build_alpaca_mocks():
     trading_enums.OrderSide = MagicMock()
     trading_enums.TimeInForce = MagicMock()
     data_historical.StockHistoricalDataClient = MagicMock(name="StockHistoricalDataClient")
+    data_historical_option = types.ModuleType("alpaca.data.historical.option")
+    data_historical_option.OptionHistoricalDataClient = MagicMock(
+        name="OptionHistoricalDataClient"
+    )
     data_requests.StockBarsRequest = MagicMock()
     data_requests.StockLatestQuoteRequest = MagicMock()
+    data_requests.OptionChainRequest = MagicMock()
     data_timeframe.TimeFrame = MagicMock()
     data_enums.DataFeed = MagicMock()
     data_enums.DataFeed.IEX = "IEX"
+    data_enums.OptionsFeed = MagicMock()
+    data_enums.OptionsFeed.INDICATIVE = "INDICATIVE"
 
     modules = {
         "alpaca": alpaca,
@@ -51,14 +58,20 @@ def _build_alpaca_mocks():
         "alpaca.trading.enums": trading_enums,
         "alpaca.data": data,
         "alpaca.data.historical": data_historical,
+        "alpaca.data.historical.option": data_historical_option,
         "alpaca.data.requests": data_requests,
         "alpaca.data.timeframe": data_timeframe,
         "alpaca.data.enums": data_enums,
     }
-    return modules, trading_client.TradingClient, data_historical.StockHistoricalDataClient
+    return (
+        modules,
+        trading_client.TradingClient,
+        data_historical.StockHistoricalDataClient,
+        data_historical_option.OptionHistoricalDataClient,
+    )
 
 
-_mocks, MockTradingClient, MockDataClient = _build_alpaca_mocks()
+_mocks, MockTradingClient, MockDataClient, MockOptionHistoricalClient = _build_alpaca_mocks()
 
 
 @pytest.fixture(autouse=True)
@@ -151,7 +164,7 @@ class TestLegacyEnvCredentials:
         monkeypatch.delenv("ALPACA_LIVE_API_KEY_ID", raising=False)
         monkeypatch.delenv("ALPACA_LIVE_API_SECRET_KEY", raising=False)
         AlpacaBroker = _import_broker()
-        with pytest.raises(ValueError, match="Alpaca credentials required"):
+        with pytest.raises(ValueError, match="Alpaca paper credentials required"):
             AlpacaBroker()
 
     def test_paper_env_override(self, monkeypatch):
@@ -171,6 +184,27 @@ class TestLegacyEnvCredentials:
         broker = AlpacaBroker(config={"broker": {"paper": False}})
         assert broker.paper is False
 
+    def test_live_env_resolved_creds_passed_to_option_client(self, monkeypatch):
+        """OptionHistoricalDataClient must use resolved_key/secret, not ctor args (often None)."""
+        monkeypatch.delenv("APCA_PAPER", raising=False)
+        monkeypatch.delenv("ALPACA_LIVE", raising=False)
+        monkeypatch.setenv("ALPACA_LIVE_API_KEY_ID", "live_k")
+        monkeypatch.setenv("ALPACA_LIVE_API_SECRET_KEY", "live_s")
+        MockOptionHistoricalClient.reset_mock()
+        AlpacaBroker = _import_broker()
+        AlpacaBroker(config={"broker": {"paper": False}})
+        MockOptionHistoricalClient.assert_called_once_with("live_k", "live_s")
+
+    def test_live_does_not_fall_back_to_paper_env(self, monkeypatch):
+        """Live API must not use APCA_* when ALPACA_LIVE_* are unset (avoids 401)."""
+        monkeypatch.delenv("ALPACA_LIVE_API_KEY_ID", raising=False)
+        monkeypatch.delenv("ALPACA_LIVE_API_SECRET_KEY", raising=False)
+        monkeypatch.setenv("APCA_API_KEY_ID", "paper_k")
+        monkeypatch.setenv("APCA_API_SECRET_KEY", "paper_s")
+        AlpacaBroker = _import_broker()
+        with pytest.raises(ValueError, match="Alpaca LIVE credentials required"):
+            AlpacaBroker(config={"broker": {"paper": False}})
+
 
 # ---------------------------------------------------------------------------
 # Tests: mixed — explicit partial args should still fail
@@ -184,7 +218,7 @@ class TestEdgeCases:
         monkeypatch.delenv("APCA_API_SECRET_KEY", raising=False)
         AlpacaBroker = _import_broker()
         # api_key given but secret is None → falls to env path → env not set → raises
-        with pytest.raises(ValueError, match="Alpaca credentials required"):
+        with pytest.raises(ValueError, match="Alpaca paper credentials required"):
             AlpacaBroker(api_key="only_key")
 
     def test_no_config_defaults(self):
