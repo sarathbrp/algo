@@ -26,8 +26,9 @@ export function useTrades(): { trades: Trade[]; isLoading: boolean } {
   })
 
   const trades: Trade[] = (data ?? []).map((t) => {
-    const exitedAt = t.exited_at ? new Date(t.exited_at.endsWith('Z') ? t.exited_at : t.exited_at + 'Z') : null
-    const enteredAt = t.entered_at ? new Date(t.entered_at.endsWith('Z') ? t.entered_at : t.entered_at + 'Z') : null
+    const parseTz = (s: string) => new Date(s.endsWith('Z') || /[+-]\d{2}:\d{2}$/.test(s) ? s : s + 'Z')
+    const exitedAt = t.exited_at ? parseTz(t.exited_at) : null
+    const enteredAt = t.entered_at ? parseTz(t.entered_at) : null
     const barsHeld = exitedAt && enteredAt
       ? Math.max(0, Math.round((exitedAt.getTime() - enteredAt.getTime()) / 86_400_000))
       : 0

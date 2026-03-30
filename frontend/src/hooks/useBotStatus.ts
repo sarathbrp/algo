@@ -12,7 +12,8 @@ function describeState(status: BotState): string {
 
 function formatAgeLabel(iso: string | null): string {
   if (!iso) return 'No heartbeat yet'
-  const ts = new Date(iso.endsWith('Z') ? iso : iso + 'Z').getTime()
+  const hasTz = iso.endsWith('Z') || /[+-]\d{2}:\d{2}$/.test(iso)
+  const ts = new Date(hasTz ? iso : iso + 'Z').getTime()
   const diffMs = Math.max(0, Date.now() - ts)
   const totalSec = Math.floor(diffMs / 1000)
   if (totalSec < 60) return `${totalSec}s ago`
