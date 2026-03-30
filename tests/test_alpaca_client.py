@@ -164,7 +164,7 @@ class TestLegacyEnvCredentials:
         monkeypatch.delenv("ALPACA_LIVE_API_KEY_ID", raising=False)
         monkeypatch.delenv("ALPACA_LIVE_API_SECRET_KEY", raising=False)
         AlpacaBroker = _import_broker()
-        with pytest.raises(ValueError, match="Alpaca credentials required"):
+        with pytest.raises(ValueError, match="Alpaca paper credentials required"):
             AlpacaBroker()
 
     def test_paper_env_override(self, monkeypatch):
@@ -195,6 +195,16 @@ class TestLegacyEnvCredentials:
         AlpacaBroker(config={"broker": {"paper": False}})
         MockOptionHistoricalClient.assert_called_once_with("live_k", "live_s")
 
+    def test_live_does_not_fall_back_to_paper_env(self, monkeypatch):
+        """Live API must not use APCA_* when ALPACA_LIVE_* are unset (avoids 401)."""
+        monkeypatch.delenv("ALPACA_LIVE_API_KEY_ID", raising=False)
+        monkeypatch.delenv("ALPACA_LIVE_API_SECRET_KEY", raising=False)
+        monkeypatch.setenv("APCA_API_KEY_ID", "paper_k")
+        monkeypatch.setenv("APCA_API_SECRET_KEY", "paper_s")
+        AlpacaBroker = _import_broker()
+        with pytest.raises(ValueError, match="Alpaca LIVE credentials required"):
+            AlpacaBroker(config={"broker": {"paper": False}})
+
 
 # ---------------------------------------------------------------------------
 # Tests: mixed — explicit partial args should still fail
@@ -208,7 +218,7 @@ class TestEdgeCases:
         monkeypatch.delenv("APCA_API_SECRET_KEY", raising=False)
         AlpacaBroker = _import_broker()
         # api_key given but secret is None → falls to env path → env not set → raises
-        with pytest.raises(ValueError, match="Alpaca credentials required"):
+        with pytest.raises(ValueError, match="Alpaca paper credentials required"):
             AlpacaBroker(api_key="only_key")
 
     def test_no_config_defaults(self):
