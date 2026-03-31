@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { login, getMe } from '@/lib/api'
+import { GoogleLogin } from '@react-oauth/google'
+import { login, googleLogin, getMe } from '@/lib/api'
 import { useAuthStore } from '@/store/authStore'
 import { useSessionStore } from '@/store/sessionStore'
 
@@ -13,6 +14,23 @@ export function Login() {
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+
+  async function handleGoogleSuccess(credential: string) {
+    setLoading(true)
+    setError('')
+    try {
+      const { access_token } = await googleLogin(credential)
+      setAuth(access_token, '', '', 'trader', true)
+      const profile = await getMe()
+      setAuth(access_token, profile.id, profile.email, profile.role, profile.paper)
+      setViewingUserId(profile.id)
+      navigate('/dashboard')
+    } catch {
+      setError('Google sign-in failed. Please try again.')
+    } finally {
+      setLoading(false)
+    }
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -74,7 +92,24 @@ export function Login() {
             </button>
           </form>
 
-          <div style={{ marginTop: 20, textAlign: 'center', fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)', letterSpacing: '0.08em' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '18px 0 4px' }}>
+            <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
+            <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--text-muted)', letterSpacing: '0.15em' }}>OR</span>
+            <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />
+          </div>
+
+          <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 4 }}>
+            <GoogleLogin
+              onSuccess={(res) => res.credential && handleGoogleSuccess(res.credential)}
+              onError={() => setError('Google sign-in failed. Please try again.')}
+              theme="filled_black"
+              shape="rectangular"
+              text="signin_with"
+              width="336"
+            />
+          </div>
+
+          <div style={{ marginTop: 16, textAlign: 'center', fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)', letterSpacing: '0.08em' }}>
             No account?{' '}
             <Link to="/signup" style={{ color: 'var(--amber)', textDecoration: 'none' }}>CREATE ONE</Link>
           </div>

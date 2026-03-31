@@ -32,12 +32,13 @@ services:
       - TIDB_DSN=mysql+pymysql://root:@tidb:4000/algosphere
       - REDIS_URL=redis://redis:6379/0
       - JWT_SECRET=${JWT_SECRET:-dev-secret-change-me}
-      - CORS_ORIGINS=http://localhost:3000,http://localhost:5173
+      - CORS_ORIGINS=http://localhost:3080,http://localhost:5173
       - API_PORT=8000
       - APCA_API_KEY_ID=${APCA_API_KEY_ID:-}
       - APCA_API_SECRET_KEY=${APCA_API_SECRET_KEY:-}
       - ALPACA_LIVE_API_KEY_ID=${ALPACA_LIVE_API_KEY_ID:-}
       - ALPACA_LIVE_API_SECRET_KEY=${ALPACA_LIVE_API_SECRET_KEY:-}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
     depends_on:
       tidb:
         condition: service_healthy
@@ -71,7 +72,7 @@ services:
       args:
         VITE_API_URL: ""
     ports:
-      - "${FRONTEND_PORT:-3000}:80"
+      - "${FRONTEND_PORT:-3080}:80"
     depends_on:
       - api
 

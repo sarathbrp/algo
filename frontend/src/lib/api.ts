@@ -57,6 +57,16 @@ export async function getMe(): Promise<UserProfile> {
   return res.data
 }
 
+export async function googleLogin(credential: string): Promise<TokenResponse> {
+  const res = await apiClient.post<TokenResponse>('/auth/google', { credential })
+  return res.data
+}
+
+export async function getConfig(): Promise<{ google_client_id: string }> {
+  const res = await apiClient.get<{ google_client_id: string }>('/auth/config')
+  return res.data
+}
+
 // ---------------------------------------------------------------------------
 // Per-user endpoints
 // ---------------------------------------------------------------------------
