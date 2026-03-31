@@ -136,6 +136,31 @@ class UserManager:
                 f"Unknown user_id '{user_id}'. Available: {available}"
             ) from None
 
+    def reload_user(self, user_id: str) -> None:
+        """Re-read a user's credentials from DB and clear their cached broker.
+
+        Called by the worker when it detects a Redis reload signal after the
+        user updates their Alpaca keys in Settings.
+        """
+        from src.db import get_session
+        from src.db.repos import account_repo, user_repo
+
+        try:
+            with get_session() as session:
+                account = account_repo.get_broker_account_for_user(session, user_id)
+                if account is None:
+                    logger.warning("[%s] reload_user: no broker account found", user_id)
+                    return
+                user = user_repo.get_by_id(session, user_id)
+                if user is None:
+                    logger.warning("[%s] reload_user: user not found", user_id)
+                    return
+                self._users[user_id] = self._build_user_context_from_db(user, account)
+                self._brokers.pop(user_id, None)
+            logger.info("[%s] Credentials reloaded from DB", user_id)
+        except Exception:
+            logger.exception("[%s] Failed to reload user credentials", user_id)
+
     def get_broker(self, user_id: str) -> Any:
         """Return a cached ``AlpacaBroker`` for *user_id*.
 

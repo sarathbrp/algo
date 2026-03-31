@@ -147,6 +147,7 @@ export interface AccountSettingsOut {
   strategy_slug: string
   risk_profile: string
   max_positions: number | null
+  has_credentials: boolean
   worker_status: string | null
   worker_current_user_id: string | null
   worker_last_heartbeat: string | null
@@ -165,6 +166,10 @@ export interface BotControlUpdate {
 }
 
 export async function onboard(userId: string, data: OnboardRequest): Promise<void> {
+  await apiClient.put(`/api/users/${userId}/onboard`, data)
+}
+
+export async function updateCredentials(userId: string, data: OnboardRequest): Promise<void> {
   await apiClient.put(`/api/users/${userId}/onboard`, data)
 }
 

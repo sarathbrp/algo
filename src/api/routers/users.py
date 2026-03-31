@@ -2,7 +2,22 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any, Literal
+
+_redis_url = os.environ.get("REDIS_URL")
+
+
+def _signal_worker_reload(user_id: str) -> None:
+    """Set a Redis key telling the worker to reload this user's credentials."""
+    if not _redis_url:
+        return
+    try:
+        import redis
+        r = redis.from_url(_redis_url, decode_responses=True)
+        r.setex(f"algosphere:reload:{user_id}", 300, "1")
+    except Exception:
+        pass
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from pydantic import BaseModel
@@ -115,6 +130,7 @@ class AccountSettingsOut(BaseModel):
     strategy_slug: str
     risk_profile: str
     max_positions: int | None
+    has_credentials: bool
     worker_status: str | None
     worker_current_user_id: str | None
     worker_last_heartbeat: str | None
@@ -249,6 +265,12 @@ def _get_live_broker(session, user_id: str) -> Any | None:
 def _account_settings_to_out(session, broker_account, settings) -> AccountSettingsOut:
     bot_state = normalize_bot_state(getattr(settings, "bot_state", None), trading_enabled=settings.trading_enabled)
     worker = worker_repo.get_worker_status(session, "alpaca_loop")
+    user = user_repo.get_by_id(session, broker_account.user_id)
+    has_credentials = bool(
+        user is not None
+        and getattr(user, "alpaca_key_env", None)
+        and getattr(user, "alpaca_secret_env", None)
+    )
     return AccountSettingsOut(
         broker_account_id=broker_account.id,
         paper=bool(broker_account.paper),
@@ -257,6 +279,7 @@ def _account_settings_to_out(session, broker_account, settings) -> AccountSettin
         bot_state_description=describe_bot_state(bot_state),
         strategy_slug=settings.strategy_slug,
         risk_profile=settings.risk_profile,
+        has_credentials=has_credentials,
         max_positions=settings.max_positions,
         worker_status=worker.status if worker is not None else None,
         worker_current_user_id=worker.current_user_id if worker is not None else None,
@@ -595,6 +618,7 @@ def onboard(
         strategy_slug="trend_following",
         risk_profile=body.risk_profile,
     )
+    _signal_worker_reload(user_id)
     return OnboardResponse()
 
 

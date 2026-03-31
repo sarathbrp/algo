@@ -518,6 +518,33 @@ def main() -> None:
             time.sleep(exit_interval_sec)
             continue
 
+        # ---- Check for credential reload signals from Settings page ----
+        if _redis_url:
+            try:
+                import redis as _redis_reload_mod
+                _rr = _redis_reload_mod.from_url(_redis_url, decode_responses=True)
+                for _reload_key in _rr.scan_iter("algosphere:reload:*"):
+                    _reload_uid = _reload_key.split(":")[-1]
+                    user_manager.reload_user(_reload_uid)
+                    for _i, _lctx in enumerate(user_contexts):
+                        if _lctx.user_id == _reload_uid:
+                            _new_uctx = user_manager.get_user(_reload_uid)
+                            _new_broker = user_manager.get_broker(_reload_uid)
+                            user_contexts[_i] = UserLoopContext(
+                                user_id=_reload_uid,
+                                user_ctx=_new_uctx,
+                                broker=_new_broker,
+                                engine=_lctx.engine,
+                                config=_new_uctx.config,
+                                paper=_new_uctx.paper,
+                                data_dir=_lctx.data_dir,
+                            )
+                            break
+                    _rr.delete(_reload_key)
+                    print(f"[{_reload_uid}] Credentials reloaded — settings update applied")
+            except Exception:
+                pass
+
         # ---- Per-user trading pass ----
         all_users_stopped = True
         for _uctx in user_contexts:
