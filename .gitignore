@@ -39,6 +39,9 @@ htmlcov/
 # Generated HTML
 dashboard.html
 
+# Internal docs (not for public repo)
+docs/
+
 # Frontend build artifacts and dependencies
 frontend/dist/
 frontend/node_modules/

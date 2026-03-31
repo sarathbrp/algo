@@ -107,6 +107,7 @@ export interface TradeOut {
   pnl: number | null
   pnl_pct: number | null
   exit_reason: string | null
+  mode: string | null
   entered_at: string | null
   exited_at: string | null
 }
