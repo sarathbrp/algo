@@ -674,6 +674,11 @@ def main() -> None:
                                     )
                                     remove_tracked(_ex_sym, user_id=_uid, data_dir=_data_dir)
                                     print(dt.strftime("%H:%M ET"), f"— RULE EXIT: sold {_ex_qty} {_ex_sym} @ ${_close_price:.2f} (P&L ${_pnl:.2f}, rule: {_rule.name})")
+                                    # Auto-deactivate exit rule + matching entry rules for this symbol
+                                    rule_repo.update_rule(_ex_session, _rule, is_active=False)
+                                    for _sibling in rule_repo.get_rules(_ex_session, _uid, symbol=_ex_sym, active_only=True):
+                                        rule_repo.update_rule(_ex_session, _sibling, is_active=False)
+                                    print(dt.strftime("%H:%M ET"), f"— Rules for {_ex_sym} deactivated (position closed)")
                                 except Exception as _ce:
                                     print(dt.strftime("%H:%M ET"), f"— RULE EXIT FAILED for {_ex_sym}: {_ce}")
                                 break  # first matching exit rule wins
@@ -1563,6 +1568,9 @@ def main() -> None:
                                             reason=f"Rule '{_rule.name}' fired → {_side} {_qty} shares @ ${_entry_price:.2f}",
                                         )
                                         print(dt.strftime("%H:%M ET"), f"— RULE ENTRY: {_side} {_qty} {_re_sym} @ ${_entry_price:.2f} (rule: {_rule.name})")
+                                        # Auto-deactivate entry rule after order placed (one-shot)
+                                        rule_repo.update_rule(_re_session, _rule, is_active=False)
+                                        print(dt.strftime("%H:%M ET"), f"— Rule #{_rule.id} deactivated (entry filled)")
                                         available_cash -= _order_cost
                                     except Exception as _oe:
                                         print(dt.strftime("%H:%M ET"), f"— RULE ORDER FAILED for {_re_sym}: {_oe}")

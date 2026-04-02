@@ -943,6 +943,14 @@ def close_position(
                 except Exception as exc:
                     _logger.debug("[%s] Failed to record trade: %s", user_id, exc)
 
+        # Deactivate rules for this symbol after manual sell
+        try:
+            for _rule in rule_repo.get_rules(db, user_id, symbol=sym, active_only=True):
+                rule_repo.update_rule(db, _rule, is_active=False)
+            _logger.info("[%s] Deactivated rules for %s after manual sell", user_id, sym)
+        except Exception:
+            pass
+
         db.commit()
 
         return SellPositionResponse(

@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "algosphere": {
+      "command": "/Users/sp-mac-mini/Documents/personal/algo/mcp-server/.venv/bin/python",
+      "args": ["/Users/sp-mac-mini/Documents/personal/algo/mcp-server/server.py"],
+      "cwd": "/Users/sp-mac-mini/Documents/personal/algo",
+      "env": {
+        "ALGOSPHERE_USER_ID": "a4ff5bf55c704372",
+        "PYTHONPATH": "/Users/sp-mac-mini/Documents/personal/algo",
+        "TIDB_DSN": "mysql+pymysql://root:@127.0.0.1:4000/algosphere"
+      }
+    }
+  }
+}
