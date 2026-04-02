@@ -51,7 +51,7 @@ from src.entry_router import (
 )
 from src.user_manager import UserManager
 from src.db import get_session
-from src.db.repos import account_repo
+from src.db.repos import account_repo, rule_repo, gate_log_repo, trade_repo, order_log_repo
 from src.loop_lock import LoopLockError, UserLoopLock, acquire_user_loop_locks
 from src.loop_helpers import (
     UserLoopContext,
@@ -135,10 +135,8 @@ def _log_entry_skip(
     verbose: bool,
     force: bool = False,
 ) -> None:
-    """Print `SYMBOL skip — reason`. If force, always print; else print when verbose or symbol is SQQQ."""
+    """Log skip to DB only. No stdout noise — users see actions, not skips."""
     sym_u = str(symbol).upper()
-    if force or verbose or sym_u == "SQQQ":
-        print(dt.strftime("%H:%M ET"), f"{sym_u} skip — {reason}")
     if _current_loop_uid:
         _persist_gate_log(_current_loop_uid, sym_u, reason, passed=False)
 
@@ -449,8 +447,8 @@ def main() -> None:
         user_filter=args.user,
     )
     if not user_contexts:
-        print("No user contexts loaded. Exiting.")
-        sys.exit(1)
+        print("No user contexts loaded — no onboarded accounts yet. Waiting for users to connect their broker in Settings.")
+        sys.exit(0)
 
     log_startup_summary(user_contexts)
 
@@ -479,8 +477,13 @@ def main() -> None:
     calendar = MarketCalendar(first_config)
     regime_scorer = MarketRegimeScorer(first_config)
     et = pytz.timezone("America/New_York")
-    exit_interval_min = int(broker_cfg.get("exit_check_interval_minutes") or broker_cfg.get("check_interval_minutes", 5))
-    entry_interval_min = int(broker_cfg.get("entry_check_interval_minutes", 10))
+    is_live = not user_contexts[0].paper
+    if is_live:
+        exit_interval_min = int(broker_cfg.get("live_exit_check_interval_minutes", 1))
+        entry_interval_min = int(broker_cfg.get("live_entry_check_interval_minutes", 2))
+    else:
+        exit_interval_min = int(broker_cfg.get("exit_check_interval_minutes") or broker_cfg.get("check_interval_minutes", 2))
+        entry_interval_min = int(broker_cfg.get("entry_check_interval_minutes", 5))
     exit_interval_sec = exit_interval_min * 60
     entry_interval_sec = entry_interval_min * 60
     # NOTE: In multi-user mode, tracker uses user_id-scoped files.
@@ -602,16 +605,84 @@ def main() -> None:
             tracked = load_tracked(_uid, data_dir=_data_dir)
             current_positions = {p["symbol"]: {"notional": p["market_value"], "stop_pct": tracked.get(p["symbol"], {}).get("stop_pct", 1.5)} for p in positions}
             sector_exposure_pct = {}
-            symbols = config.get("universe", {}).get("symbols", ["SPY"])
-            paused = {p.upper() for p in config.get("universe", {}).get("paused_symbols", [])}
-            symbols = [s for s in symbols if s.upper() not in paused]
+            # --- Symbols come from active rules only ---
+            _rule_symbols = []
+            try:
+                from src.db.connection import _SessionLocal
+                _rule_session = _SessionLocal()
+                _rule_symbols = rule_repo.get_active_symbols(_rule_session, _uid)
+                _rule_session.close()
+            except Exception:
+                pass
+            if _rule_symbols:
+                symbols = _rule_symbols
+            else:
+                # No active rules — nothing to trade
+                symbols = []
 
             # Heartbeat: so you see the loop is running even when no trades
             print(dt.strftime("%H:%M ET"), "— equity $%.0f, checking %d symbols..." % (account_equity, len(symbols)))
             sys.stdout.flush()
             _log_worker_event(_uid, "heartbeat", "equity $%.0f, %d positions, checking %d symbols" % (account_equity, len(positions), len(symbols)))
 
-            # ----- Exit rules for each tracked position (long only; cover any legacy shorts) -----
+            # ----- RULES ENGINE EXIT CHECK -----
+            if can_manage_positions:
+                try:
+                    from src.rules_engine.evaluator import evaluate_rule
+                    import json as _json
+                    _ex_session = _SessionLocal()
+                    for _ex_sym in list(tracked.keys()):
+                        _ex_pos = tracked[_ex_sym]
+                        _ex_qty = int(_ex_pos.get("qty", 0))
+                        if _ex_qty <= 0:
+                            continue
+                        _exit_rules = rule_repo.get_rules(_ex_session, _uid, symbol=_ex_sym, rule_type="exit", active_only=True)
+                        if not _exit_rules:
+                            continue
+                        try:
+                            _ex_df = broker.get_bars(_ex_sym, timeframe="1Day", limit=60)
+                            if _ex_df.empty or len(_ex_df) < 5:
+                                continue
+                        except Exception:
+                            continue
+                        for _rule in _exit_rules:
+                            _tree = _json.loads(_rule.rule_tree)
+                            _result = evaluate_rule(_ex_df, _tree, bar_idx=-1)
+                            if _result.fired:
+                                try:
+                                    broker.close_position(_ex_sym)
+                                    _close_price = float(_ex_df["close"].iloc[-1])
+                                    _entry_price = float(_ex_pos.get("entry_price", 0))
+                                    _pnl = (_close_price - _entry_price) * _ex_qty if _entry_price else 0
+                                    _pnl_pct = ((_close_price - _entry_price) / _entry_price * 100) if _entry_price else 0
+                                    trade_repo.record_trade(
+                                        _ex_session, user_id=_uid, symbol=_ex_sym, side="long",
+                                        qty=float(_ex_qty), entry_price=_entry_price, exit_price=_close_price,
+                                        pnl=_pnl, pnl_pct=_pnl_pct, exit_reason=f"rule:{_rule.name}",
+                                        mode="paper" if broker.paper else "live",
+                                    )
+                                    order_log_repo.record_order(
+                                        _ex_session, user_id=_uid, symbol=_ex_sym, side="sell",
+                                        qty=float(_ex_qty), price=_close_price,
+                                        order_type="market", source=f"rule:{_rule.name}",
+                                        mode="paper" if broker.paper else "live",
+                                    )
+                                    gate_log_repo.record_gate(
+                                        _ex_session, user_id=_uid, gate="rule_exit",
+                                        symbol=_ex_sym, passed=True,
+                                        reason=f"Rule '{_rule.name}' fired → sold {_ex_qty} shares @ ${_close_price:.2f} (P&L: ${_pnl:.2f})",
+                                    )
+                                    remove_tracked(_ex_sym, user_id=_uid, data_dir=_data_dir)
+                                    print(dt.strftime("%H:%M ET"), f"— RULE EXIT: sold {_ex_qty} {_ex_sym} @ ${_close_price:.2f} (P&L ${_pnl:.2f}, rule: {_rule.name})")
+                                except Exception as _ce:
+                                    print(dt.strftime("%H:%M ET"), f"— RULE EXIT FAILED for {_ex_sym}: {_ce}")
+                                break  # first matching exit rule wins
+                    _ex_session.commit()
+                    _ex_session.close()
+                except Exception as _ex_exc:
+                    print(dt.strftime("%H:%M ET"), f"— Rules engine exit error: {_ex_exc}")
+
+            # ----- Legacy exit rules for each tracked position -----
             if can_manage_positions:
                 for symbol in list(tracked.keys()):
                     pos = tracked[symbol]
@@ -855,6 +926,8 @@ def main() -> None:
                 breakdown_detected = False
                 ref_close: float | None = None
                 ref_ma: float | None = None
+                # Legacy bear ETF path disabled — rules engine handles all entries
+                bear_etf_symbols = []
                 if bearish_regime and bear_etf_symbols and ref_symbol:
                     try:
                         ref_bars = broker.get_bars(ref_symbol, timeframe="1Day", limit=breakdown_ma_period + 10)
@@ -1108,8 +1181,8 @@ def main() -> None:
                             )
                             continue
 
-                    # SQQQ controlled scaling (QQQ vs 50D MA only; step index + scale_count)
-                    scaling_cfg = bear_etfs_cfg.get("controlled_scaling") or {}
+                    # SQQQ controlled scaling — DISABLED (rules engine handles all entries)
+                    scaling_cfg = {}
                     sqqq_sym = str(scaling_cfg.get("symbol") or "SQQQ").upper()
 
                     if bool(scaling_cfg.get("enabled", False)) and sqqq_sym in bear_etf_universe_set:
@@ -1401,6 +1474,111 @@ def main() -> None:
                                 dt.strftime("%H:%M ET"),
                                 "— bearish: skip trend long entries (%d normal longs >= cap %d)" % (n_norm, bearish_max_norm),
                             )
+
+                # ===== RULES ENGINE ENTRY EVALUATION =====
+                if symbols:
+                    try:
+                        from src.rules_engine.evaluator import evaluate_rule
+                        import json as _json
+                        _re_session = _SessionLocal()
+                        for _re_sym in symbols:
+                            if _re_sym in current_positions or _re_sym.upper() in open_order_symbols or _re_sym.upper() in tracked:
+                                continue
+                            _entry_rules = rule_repo.get_rules(_re_session, _uid, symbol=_re_sym, rule_type="entry", active_only=True)
+                            if not _entry_rules:
+                                continue
+                            try:
+                                _re_df = broker.get_bars(_re_sym, timeframe="1Day", limit=220)
+                                if _re_df.empty or len(_re_df) < 5:
+                                    continue
+                            except Exception:
+                                continue
+                            for _rule in _entry_rules:
+                                _tree = _json.loads(_rule.rule_tree)
+                                _result = evaluate_rule(_re_df, _tree, bar_idx=-1)
+                                if _result.fired:
+                                    # Extract qty and price from actions
+                                    _qty = 1
+                                    _limit_price = None
+                                    _stop_pct = None
+                                    _tp_pct = None
+                                    for _act in _result.actions:
+                                        _aid = _act.get("action", "")
+                                        _ap = _act.get("params", {})
+                                        if _aid in ("enter_long", "enter_short", "limit_entry_at"):
+                                            _qty = int(_ap.get("qty", 1) or 1)
+                                        if _aid == "limit_entry_at":
+                                            _limit_price = float(_ap.get("price", 0) or 0)
+                                        if _aid == "set_stop_loss":
+                                            _stop_pct = float(_ap.get("pct", 0) or 0)
+                                        if _aid == "set_take_profit":
+                                            _tp_pct = float(_ap.get("pct", 0) or 0)
+                                    _close = float(_re_df["close"].iloc[-1])
+                                    _order_cost = (_limit_price or _close) * _qty
+                                    if _order_cost > available_cash:
+                                        print(dt.strftime("%H:%M ET"), f"— RULE FIRED for {_re_sym} but insufficient buying power (${_order_cost:.0f} > ${available_cash:.0f})")
+                                        gate_log_repo.record_gate(
+                                            _re_session, user_id=_uid, gate="rule_entry",
+                                            symbol=_re_sym, passed=False,
+                                            reason=f"Rule '{_rule.name}' fired but insufficient buying power (${_order_cost:.0f} > ${available_cash:.0f})",
+                                        )
+                                        continue
+                                    # Place the order
+                                    try:
+                                        _side = "sell" if any(a.get("action") == "enter_short" for a in _result.actions) else "buy"
+                                        _tp_price = round((_limit_price or _close) * (1 + _tp_pct / 100), 2) if _tp_pct else None
+                                        _sl_price = round((_limit_price or _close) * (1 - _stop_pct / 100), 2) if _stop_pct else None
+                                        if _limit_price and _limit_price > 0:
+                                            if _tp_price or _sl_price:
+                                                broker.submit_bracket_order(
+                                                    symbol=_re_sym, side=_side, qty=_qty,
+                                                    limit_price=_limit_price,
+                                                    take_profit_price=_tp_price,
+                                                    stop_loss_price=_sl_price,
+                                                    time_in_force="gtc",
+                                                )
+                                            else:
+                                                from src.execution import OrderRequest, OrderType
+                                                broker.submit_order(OrderRequest(
+                                                    symbol=_re_sym, side=_side, quantity=_qty,
+                                                    order_type=OrderType.LIMIT, limit_price=_limit_price,
+                                                ))
+                                        else:
+                                            from src.execution import OrderRequest, OrderType
+                                            broker.submit_order(OrderRequest(
+                                                symbol=_re_sym, side=_side, quantity=_qty,
+                                                order_type=OrderType.MARKET,
+                                            ))
+                                        _entry_price = _limit_price or _close
+                                        add_tracked(_re_sym, _qty, _entry_price, _stop_pct or 1.5, side="long", user_id=_uid, data_dir=_data_dir)
+                                        order_log_repo.record_order(
+                                            _re_session, user_id=_uid, symbol=_re_sym, side=_side,
+                                            qty=float(_qty), price=_entry_price,
+                                            order_type="bracket" if (_tp_price or _sl_price) else ("limit" if _limit_price else "market"),
+                                            source=f"rule:{_rule.name}", mode="paper" if broker.paper else "live",
+                                        )
+                                        gate_log_repo.record_gate(
+                                            _re_session, user_id=_uid, gate="rule_entry",
+                                            symbol=_re_sym, passed=True,
+                                            reason=f"Rule '{_rule.name}' fired → {_side} {_qty} shares @ ${_entry_price:.2f}",
+                                        )
+                                        print(dt.strftime("%H:%M ET"), f"— RULE ENTRY: {_side} {_qty} {_re_sym} @ ${_entry_price:.2f} (rule: {_rule.name})")
+                                        available_cash -= _order_cost
+                                    except Exception as _oe:
+                                        print(dt.strftime("%H:%M ET"), f"— RULE ORDER FAILED for {_re_sym}: {_oe}")
+                                        gate_log_repo.record_gate(
+                                            _re_session, user_id=_uid, gate="rule_entry",
+                                            symbol=_re_sym, passed=False,
+                                            reason=f"Rule '{_rule.name}' fired but order failed: {_oe}",
+                                        )
+                                    break  # first matching rule wins per symbol
+                        _re_session.commit()
+                        _re_session.close()
+                    except Exception as _re_exc:
+                        print(dt.strftime("%H:%M ET"), f"— Rules engine error: {_re_exc}")
+
+                # ===== LEGACY ENTRY (disabled — rules engine handles entries) =====
+                run_trend_long_entries = False
 
                 if run_trend_long_entries:
                     for symbol in symbols:

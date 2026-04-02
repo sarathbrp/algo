@@ -428,8 +428,13 @@ broker:
   # Run continuously until market close (no user interaction):
   #   python run_alpaca_loop.py
   run_until_close: false
-  exit_check_interval_minutes: 5   # check stop/target/trail/time every 5 min
-  entry_check_interval_minutes: 10  # look for new buys every 10–15 min
+  # Check intervals — paper vs live (worker auto-selects based on account mode)
+  # Paper: 2 min exits, 5 min entries (fast enough for testing, light on API)
+  # Live:  1 min exits, 2 min entries (real money needs fast reaction)
+  exit_check_interval_minutes: 2
+  entry_check_interval_minutes: 5
+  live_exit_check_interval_minutes: 1
+  live_entry_check_interval_minutes: 2
   # Retry on API connection drops (e.g. "Remote end closed connection")
   # api_retry_times: 3
   # api_retry_delay_sec: 3.0

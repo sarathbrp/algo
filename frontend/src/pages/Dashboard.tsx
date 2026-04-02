@@ -2,8 +2,8 @@ import { DashboardHero } from '@/components/panels/DashboardHero'
 import { PortfolioPanel }  from '@/components/panels/PortfolioPanel'
 import { PositionsPanel }  from '@/components/panels/PositionsPanel'
 import { WatchlistPanel }  from '@/components/panels/WatchlistPanel'
-import { RiskCapsPanel }   from '@/components/panels/RiskCapsPanel'
-import { TradesPanel }     from '@/components/panels/TradesPanel'
+import { RulesPipelinePanel } from '@/components/panels/RulesPipelinePanel'
+import { TradeActivityPanel } from '@/components/panels/TradeActivityPanel'
 import { GateLogPanel }    from '@/components/panels/GateLogPanel'
 
 export function Dashboard() {
@@ -14,8 +14,8 @@ export function Dashboard() {
         <PortfolioPanel />
         <PositionsPanel />
         <WatchlistPanel />
-        <RiskCapsPanel />
-        <TradesPanel />
+        <RulesPipelinePanel />
+        <TradeActivityPanel />
         <GateLogPanel />
       </div>
     </>

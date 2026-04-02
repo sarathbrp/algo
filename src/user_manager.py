@@ -200,9 +200,9 @@ class UserManager:
         if self._runtime_source in ("auto", "db") and self._load_from_db():
             return
         if self._runtime_source == "db":
-            logger.warning(
-                "DB runtime requested but no active broker accounts found; "
-                "falling back to compatibility loaders."
+            logger.info(
+                "No active broker accounts in DB yet — "
+                "users can connect via Settings. Falling back to config."
             )
 
         if not self._users_path.exists():

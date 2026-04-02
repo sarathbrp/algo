@@ -2,11 +2,13 @@ import { useGateLog } from '@/hooks/useGateLog'
 import { Panel } from '@/components/layout/Panel'
 
 const EVENT_STYLES: Record<string, { badge: string; color: string; bg: string }> = {
-  buy:       { badge: 'BUY',   color: 'var(--green)',           bg: 'rgba(52,211,153,0.12)' },
-  sell:      { badge: 'SELL',  color: 'var(--red)',             bg: 'rgba(248,113,113,0.12)' },
-  heartbeat: { badge: 'SYNC',  color: 'rgba(147,197,253,0.9)', bg: 'rgba(96,165,250,0.10)' },
-  regime:    { badge: 'MOOD',  color: 'var(--amber)',           bg: 'rgba(251,191,36,0.10)' },
-  entry:     { badge: 'SKIP',  color: 'var(--text-muted)',      bg: 'rgba(255,255,255,0.04)' },
+  buy:        { badge: 'BUY',    color: 'var(--green)',           bg: 'rgba(52,211,153,0.12)' },
+  sell:       { badge: 'SELL',   color: 'var(--red)',             bg: 'rgba(248,113,113,0.12)' },
+  heartbeat:  { badge: 'SYNC',   color: 'rgba(147,197,253,0.9)', bg: 'rgba(96,165,250,0.10)' },
+  regime:     { badge: 'MOOD',   color: 'var(--amber)',           bg: 'rgba(251,191,36,0.10)' },
+  rule_entry: { badge: 'ENTRY',  color: 'var(--green)',           bg: 'rgba(52,211,153,0.12)' },
+  rule_exit:  { badge: 'EXIT',   color: 'var(--red)',             bg: 'rgba(248,113,113,0.12)' },
+  entry:      { badge: 'INFO',   color: 'var(--text-muted)',      bg: 'rgba(255,255,255,0.04)' },
 }
 
 export function GateLogPanel() {

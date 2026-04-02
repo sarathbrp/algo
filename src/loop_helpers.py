@@ -87,6 +87,8 @@ def init_user_contexts(
             logger.info(
                 "[%s] Initialised loop context (paper=%s)", uid, uctx.paper
             )
+        except ValueError as exc:
+            logger.info("[%s] Skipping — %s", uid, exc)
         except Exception:
             logger.exception("[%s] Failed to initialise loop context — skipping user", uid)
     return contexts
@@ -95,7 +97,7 @@ def init_user_contexts(
 def log_startup_summary(contexts: list[UserLoopContext]) -> None:
     """Print a human-readable startup summary of loaded users."""
     if not contexts:
-        logger.warning("No user contexts loaded — nothing to trade.")
+        logger.info("No active broker accounts — worker will retry on next cycle.")
         return
     logger.info("Loaded %d user(s):", len(contexts))
     for ctx in contexts:

@@ -6,6 +6,7 @@ import { AppShell }   from '@/components/layout/AppShell'
 import { AuthGuard }  from '@/components/layout/AuthGuard'
 import { Dashboard }  from '@/pages/Dashboard'
 import { Trades }     from '@/pages/Trades'
+import { Rules }      from '@/pages/Rules'
 import { Settings }   from '@/pages/Settings'
 import { Login }      from '@/pages/Login'
 import { Signup }     from '@/pages/Signup'
@@ -29,6 +30,7 @@ export default function App() {
               <Route index             element={<Navigate to="/dashboard" replace />} />
               <Route path="/dashboard" element={<Dashboard />} />
               <Route path="/trades"    element={<Trades />} />
+              <Route path="/rules"     element={<Rules />} />
               <Route path="/settings"  element={<Settings />} />
             </Route>
           </Route>

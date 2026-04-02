@@ -8,10 +8,13 @@ const EXIT_REASON_MAP: Record<string, Trade['exitReason']> = {
   'target':        'profit-target',
   'trail-stop':    'trail-stop',
   'trail_stop':    'trail-stop',
+  'trailing_stop': 'trail-stop',
   'stop-loss':     'stop-loss',
   'stop_loss':     'stop-loss',
   'time-exit':     'time-exit',
   'time_exit':     'time-exit',
+  'manual':        'manual',
+  'manual_pending': 'manual_pending',
 }
 
 export function useTrades(): { trades: Trade[]; isLoading: boolean } {

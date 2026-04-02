@@ -3,10 +3,12 @@ import { Panel } from '@/components/layout/Panel'
 import type { Trade } from '@/types'
 
 const EXIT_STYLES: Record<Trade['exitReason'], { label: string; color: string; bg: string; border: string }> = {
-  'profit-target': { label: 'PROFIT', color: '#34d399', bg: 'rgba(52,211,153,0.12)', border: 'rgba(52,211,153,0.3)' },
-  'stop-loss':     { label: 'STOP',   color: '#f87171', bg: 'rgba(248,113,113,0.12)', border: 'rgba(248,113,113,0.3)' },
-  'trail-stop':    { label: 'TRAIL',  color: '#93c5fd', bg: 'rgba(147,197,253,0.10)', border: 'rgba(147,197,253,0.3)' },
-  'time-exit':     { label: 'TIME',   color: '#fbbf24', bg: 'rgba(251,191,36,0.10)', border: 'rgba(251,191,36,0.3)' },
+  'profit-target':  { label: 'PROFIT',  color: '#34d399', bg: 'rgba(52,211,153,0.12)', border: 'rgba(52,211,153,0.3)' },
+  'stop-loss':      { label: 'STOP',    color: '#f87171', bg: 'rgba(248,113,113,0.12)', border: 'rgba(248,113,113,0.3)' },
+  'trail-stop':     { label: 'TRAIL',   color: '#93c5fd', bg: 'rgba(147,197,253,0.10)', border: 'rgba(147,197,253,0.3)' },
+  'time-exit':      { label: 'TIME',    color: '#fbbf24', bg: 'rgba(251,191,36,0.10)', border: 'rgba(251,191,36,0.3)' },
+  'manual':         { label: 'MANUAL',  color: '#a78bfa', bg: 'rgba(167,139,250,0.12)', border: 'rgba(167,139,250,0.3)' },
+  'manual_pending': { label: 'QUEUED',  color: '#fbbf24', bg: 'rgba(251,191,36,0.10)', border: 'rgba(251,191,36,0.3)' },
 }
 
 function ExitReasonBadge({ reason }: { reason: Trade['exitReason'] }) {

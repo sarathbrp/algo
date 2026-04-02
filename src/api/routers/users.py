@@ -20,14 +20,14 @@ def _signal_worker_reload(user_id: str) -> None:
         pass
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from src.api.deps import CurrentUser, DbSession
 from src.db.models import UserRole
 from src.db.repos import (
     account_repo, daily_summary_repo, gate_log_repo, order_log_repo,
-    portfolio_repo, position_snapshot_repo, regime_repo, trade_repo,
-    user_repo, worker_repo,
+    portfolio_repo, position_snapshot_repo, regime_repo, rule_repo,
+    trade_repo, user_repo, worker_repo,
 )
 from src.worker.control import (
     BOT_STATE_PAUSED,
@@ -79,6 +79,7 @@ class PositionOut(BaseModel):
     unrealized_pnl: float | None
     stop_pct: float | None
     partial_taken: bool
+    pending_sell: bool = Field(False, description="True if there's an open sell order queued for this position")
 
     model_config = {"from_attributes": True}
 
@@ -147,6 +148,8 @@ class QuoteOut(BaseModel):
     ask: float
     mid: float
     spread_pct: float
+    change_pct: float | None = Field(None, description="% change from previous close")
+    prev_close: float | None = Field(None, description="Previous day's closing price")
     timestamp: str
     source: str
     stale: bool
@@ -245,21 +248,8 @@ def _get_quote_cache(request: Request):
 
 def _get_live_broker(session, user_id: str) -> Any | None:
     """Build a temporary AlpacaBroker from stored user credentials. Returns None on failure."""
-    try:
-        from src.brokers.alpaca_client import AlpacaBroker
-        user = user_repo.get_by_id(session, user_id)
-        if user is None:
-            return None
-        key = getattr(user, "alpaca_key_env", None)
-        secret = getattr(user, "alpaca_secret_env", None)
-        if not key or not secret:
-            return None
-        broker_account = account_repo.get_broker_account_for_user(session, user_id)
-        paper = bool(broker_account.paper) if broker_account else True
-        return AlpacaBroker(api_key=key, secret=secret, paper=paper)
-    except Exception as exc:
-        _logger.debug("Live broker init failed for %s: %s", user_id, exc)
-        return None
+    from src.api.broker_utils import get_live_broker
+    return get_live_broker(session, user_id)
 
 
 def _account_settings_to_out(session, broker_account, settings) -> AccountSettingsOut:
@@ -359,6 +349,8 @@ def get_positions(user_id: str, session: DbSession, current_user: CurrentUser) -
                 avg_entry = abs(cost_basis / qty_raw) if qty_raw else None
                 unrealized = float(bp.get("unrealized_pl") or 0)
                 db_pos = db_positions.get(symbol)
+                _qa = bp.get("qty_available")
+                qty_available = int(float(_qa)) if _qa is not None else qty
                 out.append(PositionOut(
                     symbol=symbol,
                     side=side,
@@ -369,6 +361,7 @@ def get_positions(user_id: str, session: DbSession, current_user: CurrentUser) -
                     unrealized_pnl=unrealized,
                     stop_pct=float(db_pos.stop_pct) if db_pos and db_pos.stop_pct else 1.5,
                     partial_taken=bool(db_pos.partial_taken) if db_pos else False,
+                    pending_sell=qty_available == 0 and qty > 0,
                 ))
             return out
         except Exception as exc:
@@ -396,7 +389,10 @@ def get_gate_log(
     limit: int = Query(default=50, ge=1, le=500),
 ) -> list[GateLogOut]:
     _check_access(current_user, user_id)
-    return [_gate_to_out(g) for g in gate_log_repo.get_recent(session, user_id, limit=limit)]
+    # Filter out entry skips (passed=False, gate="entry") — users see actions, not skips
+    all_logs = gate_log_repo.get_recent(session, user_id, limit=limit * 3)
+    filtered = [g for g in all_logs if not (g.gate == "entry" and not g.passed)]
+    return [_gate_to_out(g) for g in filtered[:limit]]
 
 
 @router.get("/regime", response_model=RegimeOut | None)
@@ -495,6 +491,38 @@ def get_quotes(
                         ))
                 except Exception:
                     pass
+
+    # Fetch prev close for % change on all symbols + fallback for missing quotes
+    _prev_close_cache: dict[str, float] = {}
+    broker_for_bars = _get_live_broker(session, user_id) if not missing else broker
+    if broker_for_bars:
+        from datetime import datetime, timezone
+        for symbol in normalized_symbols:
+            try:
+                df = broker_for_bars.get_bars(symbol, timeframe="1Day", limit=3)
+                if len(df) >= 2:
+                    _prev_close_cache[symbol] = float(df["close"].iloc[-2])
+                    # Fallback: if no quote yet, use last bar close
+                    if symbol not in {q.symbol for q in quotes}:
+                        close = float(df["close"].iloc[-1])
+                        prev = float(df["close"].iloc[-2])
+                        change = ((close - prev) / prev * 100) if prev > 0 else None
+                        quotes.append(QuoteOut(
+                            symbol=symbol, bid=close, ask=close, mid=close,
+                            spread_pct=0.0, change_pct=change, prev_close=prev,
+                            timestamp=datetime.now(timezone.utc).isoformat(),
+                            source="bar_close", stale=True,
+                        ))
+            except Exception:
+                pass
+
+    # Compute change_pct for quotes that don't have it yet
+    for q in quotes:
+        if q.change_pct is None and q.symbol in _prev_close_cache:
+            prev = _prev_close_cache[q.symbol]
+            if prev > 0:
+                q.change_pct = (q.mid - prev) / prev * 100
+                q.prev_close = prev
 
     return QuotesOut(
         feed_status=feed_status if feed_status else ("OK" if quotes else None),
@@ -743,3 +771,187 @@ def get_position_history(
         )
         for s in snaps
     ]
+
+
+# ---------------------------------------------------------------------------
+# Position actions — sell / close
+# ---------------------------------------------------------------------------
+
+class SellPositionRequest(BaseModel):
+    qty: int | None = Field(None, description="Number of shares to sell. If omitted, sells entire position.")
+    order_type: str = Field("market", description="'market' (sells immediately) or 'limit' (sells only at your price or better)")
+    limit_price: float | None = Field(None, description="Required for limit orders. The minimum price you'll accept.")
+    time_in_force: str = Field("day", description="'day' (expires end of day) or 'gtc' (stays open until filled or canceled)")
+
+
+class SellPositionResponse(BaseModel):
+    success: bool
+    symbol: str
+    order_type: str
+    qty_sold: str | None = None
+    limit_price: float | None = None
+    message: str
+
+
+@router.post(
+    "/positions/{symbol}/close",
+    response_model=SellPositionResponse,
+    summary="Sell / close a position",
+    description="""Close an open position. Supports two order types:
+
+- **market** (default) — sells immediately at the best available price. If the market is closed, the order queues and executes at market open.
+- **limit** — sells only at your specified price or higher. Good for after-hours when you don't want to accept a gap-down opening price.
+
+If qty is omitted, sells the entire position.""",
+    responses={
+        422: {"description": "Broker not configured or order failed"},
+    },
+)
+def close_position(
+    user_id: str,
+    symbol: str,
+    body: SellPositionRequest,
+    db: DbSession,
+    current_user: CurrentUser,
+) -> SellPositionResponse:
+    _check_access(current_user, user_id)
+    broker = _get_live_broker(db, user_id)
+    if broker is None:
+        raise HTTPException(status_code=422, detail="Broker not configured")
+
+    sym = symbol.upper()
+
+    # Cancel any existing open orders for this symbol first
+    # (e.g. bot's stop-loss or trailing stop holding the shares)
+    try:
+        open_orders = broker.get_open_orders()
+        for order in open_orders:
+            if order.get("symbol", "").upper() == sym:
+                order_id = order.get("id")
+                if order_id:
+                    try:
+                        broker._trading.cancel_order_by_id(order_id)
+                        _logger.info("[%s] Cancelled open order %s for %s before manual sell", user_id, order_id, sym)
+                    except Exception:
+                        pass  # order may have already filled/cancelled
+    except Exception as exc:
+        _logger.debug("[%s] Could not check/cancel open orders for %s: %s", user_id, sym, exc)
+
+    # Get position info before selling (for trade record)
+    entry_price = None
+    pos_qty = None
+    pos_side = "long"
+    try:
+        positions = broker.get_positions()
+        pos = next((p for p in positions if p["symbol"].upper() == sym), None)
+        if pos:
+            entry_price = float(pos.get("avg_entry_price", 0) or pos.get("cost_basis", 0))
+            pos_qty = int(float(pos.get("qty", 0)))
+            pos_side = pos.get("side", "long")
+    except Exception:
+        pass
+
+    try:
+        from datetime import datetime, timezone
+        sell_qty = body.qty or pos_qty
+        fill_price = None
+        order_id = None
+
+        if body.order_type == "limit":
+            if body.limit_price is None or body.limit_price <= 0:
+                raise HTTPException(status_code=422, detail="Limit price is required for limit orders")
+            qty = body.qty
+            if qty is None:
+                if pos_qty is None:
+                    raise HTTPException(status_code=404, detail=f"No open position for {sym}")
+                qty = pos_qty
+
+            from alpaca.trading.requests import LimitOrderRequest
+            from alpaca.trading.enums import OrderSide, TimeInForce
+            tif = TimeInForce.GTC if body.time_in_force.lower() == "gtc" else TimeInForce.DAY
+            req = LimitOrderRequest(
+                symbol=sym, qty=qty, side=OrderSide.SELL,
+                time_in_force=tif, limit_price=float(body.limit_price),
+            )
+            result = broker._trading.submit_order(order_data=req)
+            order_id = str(getattr(result, "id", ""))
+            fill_price = body.limit_price
+            sell_qty = qty
+            order_type_label = "limit"
+            msg = f"Limit sell: {qty} shares of {sym} at ${body.limit_price:.2f} ({body.time_in_force.upper()})"
+        else:
+            result = broker.close_position(sym, qty=body.qty)
+            order_id = str(getattr(result, "id", ""))
+            fill_price = float(getattr(result, "filled_avg_price", 0) or 0) or None
+            order_type_label = "market"
+            status = getattr(result, "status", None)
+            is_filled = str(status).lower() in ("filled", "partially_filled") if status else bool(fill_price)
+            if is_filled:
+                msg = f"Sold {sell_qty or 'all'} shares of {sym} at ${fill_price:.2f}" if fill_price else f"Sold {sell_qty or 'all'} shares of {sym}"
+            else:
+                msg = f"Sell order queued for {sell_qty or 'all'} shares of {sym} — will execute at market open (9:30 AM ET)"
+
+        _logger.info("[%s] %s sell %s (qty=%s, fill=%s)", user_id, order_type_label, sym, sell_qty, fill_price)
+
+        # Record in order_log
+        try:
+            order_log_repo.record_order(
+                db, user_id=user_id, symbol=sym, side="sell",
+                qty=float(sell_qty or 0), price=fill_price,
+                order_type=order_type_label, source="manual",
+                mode="paper" if getattr(broker, 'paper', True) else "live",
+                broker_order_id=order_id,
+            )
+        except Exception as exc:
+            _logger.debug("[%s] Failed to record order log: %s", user_id, exc)
+
+        # Record as completed trade if we have entry info
+        # For queued orders (market closed), use current_price as estimate
+        if entry_price and entry_price > 0 and sell_qty:
+            exit_px = fill_price
+            if not exit_px or exit_px <= 0:
+                # Order queued (market closed) — use current price as estimate
+                try:
+                    quote = broker.get_latest_quote(sym)
+                    exit_px = float(getattr(quote, 'mid', 0) or 0) if quote else 0
+                except Exception:
+                    exit_px = 0
+                # Still no price — use entry as placeholder
+                if not exit_px or exit_px <= 0:
+                    try:
+                        for p_info in (broker.get_positions() or []):
+                            if p_info.get("symbol", "").upper() == sym:
+                                exit_px = float(p_info.get("current_price", 0) or 0)
+                                break
+                    except Exception:
+                        pass
+
+            exit_reason = "manual" if (fill_price and fill_price > 0) else "manual_pending"
+            if exit_px and exit_px > 0:
+                try:
+                    pnl = (exit_px - entry_price) * sell_qty if pos_side == "long" \
+                        else (entry_price - exit_px) * sell_qty
+                    pnl_pct = ((exit_px - entry_price) / entry_price * 100) if pos_side == "long" \
+                        else ((entry_price - exit_px) / entry_price * 100)
+                    trade_repo.record_trade(
+                        db, user_id=user_id, symbol=sym, side=pos_side,
+                        qty=float(sell_qty), entry_price=entry_price, exit_price=exit_px,
+                        pnl=pnl, pnl_pct=pnl_pct, exit_reason=exit_reason,
+                        exited_at=datetime.now(timezone.utc),
+                        mode="paper" if getattr(broker, 'paper', True) else "live",
+                    )
+                except Exception as exc:
+                    _logger.debug("[%s] Failed to record trade: %s", user_id, exc)
+
+        db.commit()
+
+        return SellPositionResponse(
+            success=True, symbol=sym, order_type=order_type_label,
+            qty_sold=str(sell_qty or "all"), limit_price=body.limit_price,
+            message=msg,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _logger.error("[%s] Failed to sell %s: %s", user_id, symbol, exc)
+        raise HTTPException(status_code=422, detail=f"Failed to sell: {exc}")

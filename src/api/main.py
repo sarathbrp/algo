@@ -6,7 +6,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from src.api.routers import admin, auth, users
+from src.api.routers import admin, auth, rules, rules_engine, users
 from src.db import Base, engine
 
 # Create tables on startup for SQLite only (dev convenience).
@@ -16,8 +16,28 @@ if str(engine.url).startswith("sqlite"):
 
 app = FastAPI(
     title="AlgoSphere API",
-    version="0.1.0",
-    description="Multi-user algorithmic trading dashboard API",
+    version="2.0.0",
+    description="""## AlgoSphere Trading Engine API
+
+Multi-user algorithmic trading platform with visual rules engine, backtesting, and live trading via Alpaca.
+
+### API Groups
+
+- **auth** — Registration, login (email + Google OAuth), JWT token management
+- **users** — Per-user portfolio, positions, trades, watchlist, bot control, quotes
+- **rules** — CRUD for trading rules + indicator/comparator/action catalog for the visual rule builder
+- **rules-engine** — Evaluate rules against live data, run historical backtests, validate rules, detect conflicts
+- **admin** — User management (admin-only)
+
+### Rules Engine
+
+Build trading rules visually by combining **indicators** (EMA, SMA, RSI, ATR, VWAP, Volume) with **conditions** (crosses above, is below, between) and **actions** (enter long, stop loss, take profit).
+
+Test any rule combination with:
+- `/rules/validate` — static validation (no broker needed)
+- `/rules/evaluate-inline` — test against live market data
+- `/rules/backtest` — full historical simulation with trades, P&L, equity curve
+""",
 )
 
 _allowed_origins = os.environ.get(
@@ -35,6 +55,8 @@ app.add_middleware(
 
 app.include_router(auth.router)
 app.include_router(users.router)
+app.include_router(rules_engine.router)
+app.include_router(rules.router)
 app.include_router(admin.router)
 
 # ---------------------------------------------------------------------------

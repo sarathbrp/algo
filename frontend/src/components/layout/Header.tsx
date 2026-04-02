@@ -152,6 +152,7 @@ export function Header() {
         {[
           { to: '/dashboard', label: 'DASHBOARD' },
           { to: '/trades',    label: 'TRADES' },
+          { to: '/rules',     label: 'RULES' },
           { to: '/settings',  label: 'SETTINGS' },
         ].map(({ to, label }) => (
           <NavLink

@@ -9,6 +9,7 @@ export interface Position {
   returnPct: number
   stopPct: number | null
   partialTaken: boolean
+  pendingSell: boolean
 }
 
 export interface Trade {
@@ -20,7 +21,7 @@ export interface Trade {
   exitPrice: number
   pnl: number
   returnPct: number
-  exitReason: 'profit-target' | 'stop-loss' | 'trail-stop' | 'time-exit'
+  exitReason: 'profit-target' | 'stop-loss' | 'trail-stop' | 'time-exit' | 'manual' | 'manual_pending'
   barsHeld: number
 }
 

@@ -125,6 +125,9 @@ class User(Base):
     position_snapshots: Mapped[list[PositionSnapshot]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
+    trading_rules: Mapped[list[TradingRule]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
 
     def __repr__(self) -> str:
         return f"<User id={self.id!r} role={self.role.value}>"
@@ -467,6 +470,41 @@ class OrderLog(Base):
 
     def __repr__(self) -> str:
         return f"<OrderLog user={self.user_id!r} {self.side} {self.symbol} qty={self.qty}>"
+
+
+class TradingRule(Base):
+    """User-defined trading rule for the rules engine."""
+
+    __tablename__ = "trading_rules"
+    __table_args__ = (
+        Index("idx_rule_user", "user_id"),
+        Index("idx_rule_user_active", "user_id", "is_active"),
+        Index("idx_rule_user_symbol", "user_id", "symbol"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    symbol: Mapped[str] = mapped_column(String(16), nullable=False)
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rule_type: Mapped[str] = mapped_column(String(16), nullable=False)  # "entry" or "exit"
+    rule_tree: Mapped[str] = mapped_column(Text, nullable=False)  # JSON rule tree
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow, onupdate=_utcnow
+    )
+
+    user: Mapped[User] = relationship(back_populates="trading_rules")
+
+    def __repr__(self) -> str:
+        return f"<TradingRule user={self.user_id!r} name={self.name!r} type={self.rule_type!r}>"
 
 
 class PositionSnapshot(Base):

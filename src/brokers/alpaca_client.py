@@ -252,10 +252,15 @@ class AlpacaBroker:
             positions = self._trading.get_all_positions()
             out = []
             for p in positions:
+                qty = int(float(p.qty))
+                qty_available = int(float(getattr(p, 'qty_available', qty) or qty))
                 out.append({
                     "symbol": p.symbol,
-                    "qty": int(float(p.qty)),
+                    "qty": qty,
+                    "qty_available": qty_available,
                     "side": str(p.side),
+                    "avg_entry_price": float(p.avg_entry_price or 0),
+                    "current_price": float(p.current_price or 0),
                     "market_value": float(p.market_value or 0),
                     "cost_basis": float(p.cost_basis or 0),
                     "unrealized_pl": float(p.unrealized_pl or 0),
@@ -423,8 +428,78 @@ class AlpacaBroker:
             )
         return self._trading.submit_order(order_data=req)
 
+    def submit_bracket_order(
+        self,
+        symbol: str,
+        side: str,
+        qty: int,
+        limit_price: float,
+        take_profit_price: float | None = None,
+        stop_loss_price: float | None = None,
+        time_in_force: str = "gtc",
+    ) -> Any:
+        """Submit a bracket order: limit entry + take-profit + stop-loss as one atomic order.
+
+        Parameters
+        ----------
+        symbol : Ticker symbol
+        side : "buy" or "sell"
+        qty : Number of shares
+        limit_price : Entry limit price (the support/resistance level)
+        take_profit_price : Limit price for the take-profit leg (optional)
+        stop_loss_price : Stop price for the stop-loss leg (optional)
+        time_in_force : "day" or "gtc" (good-til-canceled, default)
+        """
+        order_side = OrderSide.BUY if side.lower() == "buy" else OrderSide.SELL
+        tif = TimeInForce.GTC if time_in_force.lower() == "gtc" else TimeInForce.DAY
+
+        from alpaca.trading.enums import OrderClass
+        from alpaca.trading.requests import TakeProfitRequest, StopLossRequest
+
+        kwargs: dict[str, Any] = {
+            "symbol": symbol,
+            "qty": qty,
+            "side": order_side,
+            "time_in_force": tif,
+            "limit_price": float(limit_price),
+            "order_class": OrderClass.BRACKET,
+        }
+
+        if take_profit_price is not None:
+            kwargs["take_profit"] = TakeProfitRequest(limit_price=float(take_profit_price))
+        if stop_loss_price is not None:
+            kwargs["stop_loss"] = StopLossRequest(stop_price=float(stop_loss_price))
+
+        req = LimitOrderRequest(**kwargs)
+        return self._trading.submit_order(order_data=req)
+
+    def validate_symbol(self, symbol: str) -> dict | None:
+        """Check if a symbol is a valid, tradable asset on Alpaca.
+
+        Returns asset info dict (name, exchange, tradable) or None if invalid.
+        """
+        try:
+            asset = self._trading.get_asset(symbol.upper())
+            return {
+                "symbol": asset.symbol,
+                "name": asset.name,
+                "exchange": asset.exchange,
+                "tradable": asset.tradable,
+                "status": asset.status,
+            }
+        except Exception:
+            return None
+
     def get_order(self, order_id: str) -> Any:
         return self._trading.get_order_by_id(order_id)
+
+    def close_position(self, symbol: str, qty: int | None = None) -> Any:
+        """Close a single position. If qty is None, closes the entire position."""
+        from alpaca.trading.requests import ClosePositionRequest
+        close_opts = None
+        if qty is not None:
+            close_opts = ClosePositionRequest(qty=str(qty))
+        return self._trading.close_position(symbol, close_options=close_opts)
 
     def close_all_positions(self, cancel_orders: bool = True) -> list[Any]:
         """Liquidate all open positions. If cancel_orders is True, cancel open orders first.

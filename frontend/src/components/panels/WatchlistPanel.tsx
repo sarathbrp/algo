@@ -1,26 +1,13 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/lib/api'
 import { useViewingUserId } from '@/store/sessionStore'
 import { Panel } from '@/components/layout/Panel'
 
-function formatTime(iso: string) {
-  const hasTz = iso.endsWith('Z') || /[+-]\d{2}:\d{2}$/.test(iso)
-  const d = new Date(hasTz ? iso : iso + 'Z')
-  return d.toLocaleTimeString('en-US', {
-    timeZone: 'America/New_York',
-    hour12: false,
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  })
-}
-
 export function WatchlistPanel() {
   const userId = useViewingUserId()
   const queryClient = useQueryClient()
   const [newSymbol, setNewSymbol] = useState('')
-  const [editing, setEditing] = useState(false)
 
   const { data: watchlistData } = useQuery({
     queryKey: ['watchlist', userId],
@@ -31,16 +18,28 @@ export function WatchlistPanel() {
 
   const symbols = watchlistData?.symbols ?? []
 
-  const { data: quotesData } = useQuery({
+  const REFRESH_INTERVAL = 15_000
+
+  const { data: quotesData, dataUpdatedAt } = useQuery({
     queryKey: ['watchlist-quotes', userId, symbols],
     queryFn: () => api.quotes(userId!, symbols),
     enabled: !!userId && symbols.length > 0,
     staleTime: 10_000,
-    refetchInterval: 15_000,
+    refetchInterval: REFRESH_INTERVAL,
   })
 
   const quotes = quotesData?.quotes ?? []
   const quoteMap = Object.fromEntries(quotes.map((q) => [q.symbol, q]))
+
+  // Countdown timer
+  const [countdown, setCountdown] = useState(REFRESH_INTERVAL / 1000)
+  useEffect(() => {
+    setCountdown(REFRESH_INTERVAL / 1000)
+  }, [dataUpdatedAt])
+  useEffect(() => {
+    const id = setInterval(() => setCountdown(prev => Math.max(0, prev - 1)), 1000)
+    return () => clearInterval(id)
+  }, [])
 
   const updateMutation = useMutation({
     mutationFn: (newSymbols: string[]) => api.updateWatchlist(userId!, newSymbols),
@@ -74,46 +73,20 @@ export function WatchlistPanel() {
           onKeyDown={(e) => e.key === 'Enter' && addSymbol()}
           placeholder="Add ticker..."
           style={{
-            flex: 1,
-            padding: '6px 10px',
-            fontFamily: 'var(--font-mono)',
-            fontSize: 11,
-            background: 'var(--bg-panel-alt)',
-            border: '1px solid rgba(255,255,255,0.1)',
-            borderRadius: 10,
-            color: 'var(--text-primary)',
-            outline: 'none',
+            flex: 1, padding: '6px 10px', fontFamily: 'var(--font-mono)', fontSize: 11,
+            background: 'var(--bg-panel-alt)', border: '1px solid rgba(255,255,255,0.1)',
+            borderRadius: 10, color: 'var(--text-primary)', outline: 'none',
           }}
         />
         <button
           onClick={addSymbol}
           style={{
-            padding: '6px 12px',
-            fontFamily: 'var(--font-mono)',
-            fontSize: 10,
-            background: 'rgba(52,211,153,0.12)',
-            border: '1px solid rgba(52,211,153,0.2)',
-            borderRadius: 10,
-            color: 'var(--green)',
-            cursor: 'pointer',
+            padding: '6px 12px', fontFamily: 'var(--font-mono)', fontSize: 10,
+            background: 'rgba(52,211,153,0.12)', border: '1px solid rgba(52,211,153,0.2)',
+            borderRadius: 10, color: 'var(--green)', cursor: 'pointer',
           }}
         >
           ADD
-        </button>
-        <button
-          onClick={() => setEditing(!editing)}
-          style={{
-            padding: '6px 10px',
-            fontFamily: 'var(--font-mono)',
-            fontSize: 10,
-            background: editing ? 'rgba(248,113,113,0.12)' : 'rgba(255,255,255,0.04)',
-            border: `1px solid ${editing ? 'rgba(248,113,113,0.2)' : 'rgba(255,255,255,0.08)'}`,
-            borderRadius: 10,
-            color: editing ? 'var(--red)' : 'var(--text-muted)',
-            cursor: 'pointer',
-          }}
-        >
-          {editing ? 'DONE' : 'EDIT'}
         </button>
       </div>
 
@@ -126,93 +99,125 @@ export function WatchlistPanel() {
         )}
         {symbols.map((sym, i) => {
           const q = quoteMap[sym]
+          const changePct = q?.change_pct ?? null
+          const changeColor = changePct === null ? 'var(--text-muted)'
+            : changePct >= 0 ? 'var(--green)' : 'var(--red)'
+
           return (
             <div
               key={sym}
               style={{
                 padding: '7px 13px',
                 borderBottom: i < symbols.length - 1 ? '1px solid var(--border)' : 'none',
-                display: 'grid',
-                gridTemplateColumns: editing ? 'auto 1fr auto auto' : '1fr auto auto',
+                display: 'flex',
                 alignItems: 'center',
                 gap: 8,
               }}
             >
-              {editing && (
-                <button
-                  onClick={() => removeSymbol(sym)}
-                  style={{
-                    width: 18,
-                    height: 18,
-                    borderRadius: '50%',
-                    border: '1px solid rgba(248,113,113,0.3)',
-                    background: 'rgba(248,113,113,0.1)',
-                    color: 'var(--red)',
-                    fontFamily: 'var(--font-mono)',
-                    fontSize: 11,
-                    cursor: 'pointer',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    padding: 0,
-                  }}
-                >
-                  ×
-                </button>
-              )}
-              <div>
+              {/* Symbol */}
+              <div style={{ minWidth: 50 }}>
                 <div style={{ fontFamily: 'var(--font-display)', fontSize: 14, letterSpacing: '-0.03em' }}>
                   {sym}
                 </div>
-                {q && (
-                  <div style={{ fontFamily: 'var(--font-mono)', fontSize: 8, color: 'var(--text-muted)', marginTop: 1 }}>
-                    {formatTime(q.timestamp)} ET
-                  </div>
-                )}
               </div>
-              <div style={{ textAlign: 'right' }}>
-                {q ? (
-                  <div style={{ fontFamily: 'var(--font-display)', fontSize: 16, letterSpacing: '-0.04em' }}>
-                    ${q.mid.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+
+              {/* Price + Prev Close + Change */}
+              {q ? (
+                <>
+                  <div style={{ flex: 1, textAlign: 'right' }}>
+                    <div style={{
+                      fontFamily: 'var(--font-display)', fontSize: 15, letterSpacing: '-0.04em',
+                      opacity: q.stale ? 0.6 : 1,
+                    }}>
+                      ${q.mid.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </div>
+                    {q.prev_close != null && (
+                      <div style={{ fontFamily: 'var(--font-mono)', fontSize: 8, color: 'var(--text-muted)', marginTop: 1 }}>
+                        prev ${q.prev_close.toFixed(2)}
+                      </div>
+                    )}
                   </div>
-                ) : (
-                  <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)' }}>
-                    --
+                  <div style={{ minWidth: 75, textAlign: 'right' }}>
+                    {changePct !== null && q.prev_close != null ? (
+                      <div>
+                        <div style={{
+                          fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 700,
+                          color: changeColor,
+                        }}>
+                          {changePct >= 0 ? '+' : ''}{changePct.toFixed(2)}%
+                        </div>
+                        <div style={{
+                          fontFamily: 'var(--font-mono)', fontSize: 9,
+                          color: changeColor, marginTop: 1,
+                        }}>
+                          {(q.mid - q.prev_close) >= 0 ? '+' : ''}${(q.mid - q.prev_close).toFixed(2)}
+                        </div>
+                      </div>
+                    ) : (
+                      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)' }}>--</span>
+                    )}
                   </div>
-                )}
-              </div>
-              {q && (
-                <div style={{
-                  fontFamily: 'var(--font-mono)',
-                  fontSize: 9,
-                  color: 'var(--text-muted)',
-                  textAlign: 'right',
-                  minWidth: 55,
-                }}>
-                  <div>bid {q.bid.toFixed(2)}</div>
-                  <div>ask {q.ask.toFixed(2)}</div>
+                </>
+              ) : (
+                <div style={{ flex: 1, textAlign: 'right' }}>
+                  <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--text-muted)', fontStyle: 'italic' }}>
+                    Not available on Alpaca
+                  </span>
                 </div>
               )}
+
+              {/* Remove button */}
+              <button
+                onClick={() => removeSymbol(sym)}
+                title={`Remove ${sym}`}
+                style={{
+                  width: 20, height: 20, borderRadius: 6, padding: 0,
+                  border: '1px solid transparent',
+                  background: 'transparent',
+                  color: 'var(--text-muted)',
+                  fontFamily: 'var(--font-mono)', fontSize: 13,
+                  cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  transition: 'all 0.15s', flexShrink: 0,
+                }}
+                onMouseEnter={e => {
+                  e.currentTarget.style.background = 'var(--red-dim)'
+                  e.currentTarget.style.color = 'var(--red)'
+                  e.currentTarget.style.borderColor = 'rgba(255,77,109,0.3)'
+                }}
+                onMouseLeave={e => {
+                  e.currentTarget.style.background = 'transparent'
+                  e.currentTarget.style.color = 'var(--text-muted)'
+                  e.currentTarget.style.borderColor = 'transparent'
+                }}
+              >
+                x
+              </button>
             </div>
           )
         })}
       </div>
 
-      {/* Feed status footer */}
-      {quotesData && (
-        <div style={{
-          padding: '6px 13px',
-          borderTop: '1px solid var(--border)',
-          fontFamily: 'var(--font-mono)',
-          fontSize: 9,
-          color: 'var(--text-muted)',
-          display: 'flex',
-          justifyContent: 'space-between',
-        }}>
-          <span>Feed: {quotesData.feed_status ?? 'N/A'}</span>
-          <span>{quotesData.feed_timestamp ? formatTime(quotesData.feed_timestamp) + ' ET' : ''}</span>
+      {/* Footer with countdown */}
+      <div style={{
+        padding: '6px 13px', borderTop: '1px solid var(--border)',
+        fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--text-muted)',
+        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+      }}>
+        <span>Feed: {quotesData?.feed_status ?? (symbols.length > 0 ? 'loading' : 'idle')}</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <div style={{
+            width: 30, height: 3, borderRadius: 99, background: 'rgba(255,255,255,0.06)', overflow: 'hidden',
+          }}>
+            <div style={{
+              height: '100%', borderRadius: 99,
+              width: `${(countdown / (REFRESH_INTERVAL / 1000)) * 100}%`,
+              background: countdown <= 3 ? 'var(--green)' : 'var(--text-muted)',
+              transition: 'width 1s linear',
+            }} />
+          </div>
+          <span style={{ minWidth: 20, textAlign: 'right' }}>{countdown}s</span>
         </div>
-      )}
+      </div>
     </Panel>
   )
 }

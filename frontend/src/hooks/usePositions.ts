@@ -14,7 +14,7 @@ export function usePositions(): { positions: Position[]; isLoading: boolean; upd
     refetchInterval: 15_000,
   })
 
-  const positions: Position[] = (data ?? []).map((p) => ({
+  const allPositions: Position[] = (data ?? []).map((p) => ({
     symbol: p.symbol,
     side: p.side as 'long' | 'short',
     shares: p.qty,
@@ -27,7 +27,8 @@ export function usePositions(): { positions: Position[]; isLoading: boolean; upd
       : 0,
     stopPct: p.stop_pct ?? null,
     partialTaken: p.partial_taken,
+    pendingSell: p.pending_sell ?? false,
   }))
 
-  return { positions, isLoading, updatedAt: dataUpdatedAt }
+  return { positions: allPositions, isLoading, updatedAt: dataUpdatedAt }
 }
