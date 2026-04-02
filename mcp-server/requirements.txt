@@ -1,0 +1,7 @@
+mcp>=1.0.0
+alpaca-py>=0.30.0
+sqlalchemy>=2.0.0
+pymysql>=1.1.0
+pandas>=2.0.0
+pytz
+pyjwt>=2.0.0

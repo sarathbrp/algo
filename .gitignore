@@ -45,3 +45,5 @@ docs/
 # Frontend build artifacts and dependencies
 frontend/dist/
 frontend/node_modules/
+mcp-server/.venv/
+**/__pycache__/
